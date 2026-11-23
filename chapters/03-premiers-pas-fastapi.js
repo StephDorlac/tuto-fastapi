@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch02',
+  id: 'ch03',
   title: 'Premiers pas avec FastAPI',
   subtitle: "Un prototype naïf de Biblio API : routes, paramètres de chemin et de requête, corps JSON, codes HTTP et Swagger.",
   duration: '40 min',
@@ -7,7 +7,7 @@ registerChapter({
     'Lancer une application FastAPI avec <code>fastapi dev</code> et explorer <code>/docs</code>.',
     'Déclarer des paramètres de chemin, de requête et de corps, avec leur validation.',
     'Choisir entre <code>async def</code> et <code>def</code> pour une opération.',
-    "Identifier ce qui ne va pas dans un prototype « tout-en-un » (motivation de l'étape 4).",
+    "Identifier ce qui ne va pas dans un prototype « tout-en-un » (motivation de l'étape 5).",
   ],
   content: `
 <h2>Hello Biblio</h2>
@@ -20,6 +20,13 @@ app = FastAPI(title="Biblio API", version="0.1.0")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 `}
+${explain([
+  [`from fastapi import FastAPI`, `Importe la classe <code>FastAPI</code> depuis le paquet <code>fastapi</code>, installé à l'étape 0.`],
+  [`app = FastAPI(title="Biblio API", version="0.1.0")`, `Crée l'<strong>application</strong>. Le titre et la version apparaissent dans la documentation Swagger. La variable <code>app</code> est celle que le serveur va chercher.`],
+  [`@app.get("/health")`, `Décorateur de route : la fonction juste en dessous répondra à <code>GET /health</code>. C'est l'équivalent de <code>@GetMapping("/health")</code>.`],
+  [`async def health() -> dict[str, str]:`, `Une fonction asynchrone sans paramètre qui renvoie un dictionnaire de chaînes. On la nomme ici <em>endpoint</em> (ou <em>path operation</em>).`],
+  [`return {"status": "ok"}`, `Le <code>dict</code> renvoyé est automatiquement sérialisé en JSON : <code>{"status": "ok"}</code>, avec un statut 200 par défaut.`],
+])}
 ${sh`
 uv run fastapi dev src/biblio/main.py     # rechargement à chaud, port 8000
 # -> http://127.0.0.1:8000/health
@@ -27,7 +34,7 @@ uv run fastapi dev src/biblio/main.py     # rechargement à chaud, port 8000
 # -> http://127.0.0.1:8000/redoc    (ReDoc)
 # -> http://127.0.0.1:8000/openapi.json
 `}
-<p><code>fastapi dev</code> lance Uvicorn en mode développement. En production, on utilisera <code>fastapi run</code> (étape 12).
+<p><code>fastapi dev</code> lance Uvicorn en mode développement. En production, on utilisera <code>fastapi run</code> (étape 13).
 Ouvre <code>/docs</code> : l'endpoint y figure déjà, avec le schéma de sa réponse, déduit de l'annotation <code>-&gt; dict[str, str]</code>.</p>
 
 <h2>Prototype v0 : un CRUD de livres en mémoire</h2>
@@ -76,6 +83,27 @@ async def get_book(book_id: UUID) -> BookOut:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Livre introuvable")
     return book
 `}
+${explain([
+  [`from uuid import UUID, uuid4`, `<code>UUID</code> est le type identifiant (≈ <code>UUID</code> / <code>Guid</code>). <code>uuid4()</code> en génère un aléatoire.`],
+  [`class BookIn(BaseModel):`, `Un <strong>schéma Pydantic</strong> : la classe hérite de <code>BaseModel</code>. Elle décrit le JSON attendu en entrée, comme un DTO annoté <code>@Valid</code>.`],
+  [`isbn: str
+title: str
+author: str`, `Les champs du schéma. Sans valeur par défaut, ils sont <strong>obligatoires</strong>. Un JSON sans <code>title</code> sera rejeté avec une erreur 422.`],
+  [`class BookOut(BookIn):`, `<code>BookOut</code> hérite de <code>BookIn</code> : il a les mêmes champs, plus <code>id</code>.`],
+  [`_books: dict[UUID, BookOut] = {}`, `Un dictionnaire global qui sert de « base de données » en mémoire. Le <code>_</code> initial signale qu'il est interne au module.`],
+  [`@app.post("/books", status_code=status.HTTP_201_CREATED)`, `Route <code>POST /books</code> qui répond <strong>201 Created</strong> en cas de succès. <code>status.HTTP_201_CREATED</code> est simplement la constante <code>201</code>.`],
+  [`async def create_book(payload: BookIn) -> BookOut:`, `Le paramètre <code>payload</code> est de type <code>BookIn</code> (un modèle Pydantic). FastAPI comprend qu'il faut le lire dans le <strong>corps JSON</strong> de la requête et le valider.`],
+  [`BookOut(id=uuid4(), **payload.model_dump())`, `<code>payload.model_dump()</code> convertit le modèle en dictionnaire <code>{"isbn": …, "title": …, "author": …}</code>. <code>**</code> <strong>déplie</strong> ce dictionnaire en arguments nommés. La ligne équivaut donc à <code>BookOut(id=…, isbn=…, title=…, author=…)</code>.`],
+  [`_books[book.id] = book`, `Range le livre dans le dictionnaire, avec son id comme clé.`],
+  [`async def list_books(q: str | None = None, limit: int = 20) -> list[BookOut]:`, `<code>q</code> et <code>limit</code> ne figurent pas dans le chemin et sont de type simple : FastAPI les lit dans la <strong>query string</strong> (<code>?q=clean&amp;limit=5</code>). Leurs valeurs par défaut les rendent facultatifs.`],
+  [`list(_books.values())`, `<code>.values()</code> donne les valeurs du dictionnaire, et <code>list(…)</code> les copie dans une vraie liste.`],
+  [`if q:`, `Vrai si <code>q</code> n'est ni <code>None</code> ni une chaîne vide.`],
+  [`[b for b in books if q.lower() in b.title.lower()]`, `Filtre les livres dont le titre contient <code>q</code>, sans tenir compte de la casse. <code>in</code> teste ici la présence d'une sous-chaîne.`],
+  [`return books[:limit]`, `Slicing : les <code>limit</code> premiers éléments.`],
+  [`@app.get("/books/{book_id}")`, `<code>{book_id}</code> est une variable de chemin. Comme la fonction a un paramètre du même nom, FastAPI y place la valeur et la convertit en <code>UUID</code> (une erreur 422 si ce n'est pas un UUID).`],
+  [`book = _books.get(book_id)`, `<code>get</code> renvoie <code>None</code> si la clé est absente, au lieu de lever une erreur.`],
+  [`raise HTTPException(status_code=..., detail="Livre introuvable")`, `Lever une <code>HTTPException</code> interrompt la fonction et renvoie une réponse 404 avec <code>{"detail": "Livre introuvable"}</code>.`],
+])}
 
 <h3>Comment FastAPI interprète la signature</h3>
 <ul>
@@ -116,6 +144,14 @@ async def list_books(
 async def get_book(book_id: Annotated[UUID, Path(description="Identifiant du livre")]) -> BookOut:
     ...
 `}
+${explain([
+  [`q: Annotated[str | None, Query(max_length=100, description="...")] = None`, `<code>Annotated[Type, info]</code> se lit « un <code>Type</code>, accompagné de cette info ». mypy ne voit que <code>str | None</code>. FastAPI lit <code>Query(…)</code> : « paramètre de query string, 100 caractères maximum, avec cette description dans Swagger ».`],
+  [`limit: Annotated[int, Query(ge=1, le=100)] = 20`, `<code>ge</code> signifie <em>greater or equal</em> (≥ 1) et <code>le</code> <em>less or equal</em> (≤ 100). <code>?limit=500</code> renvoie donc une 422.`],
+  [`sorted(_books.values(), key=lambda b: b.title)`, `<code>sorted</code> renvoie une nouvelle liste triée. <code>key=lambda b: b.title</code> trie par titre. <code>lambda b: b.title</code> est une fonction anonyme (≈ <code>b -&gt; b.getTitle()</code>).`],
+  [`books[offset : offset + limit]`, `Slicing pour paginer : les éléments de <code>offset</code> inclus à <code>offset + limit</code> exclu.`],
+  [`Annotated[UUID, Path(description="...")]`, `Même principe pour un paramètre de <strong>chemin</strong> : <code>Path(…)</code> sert à le documenter ou à le contraindre.`],
+  [`...`, `Le corps est omis dans l'exemple : il est identique à la version précédente.`],
+])}
 
 <h2>Ce que renvoie une erreur de validation</h2>
 ${http`
@@ -155,7 +191,7 @@ Le seul vrai danger, c'est d'appeler du code bloquant dans une coroutine.</p>`)}
   <li><strong>Testabilité</strong> : impossible de tester une règle sans passer par HTTP.</li>
   <li><strong>État global</strong> : <code>_books</code> est une variable de module partagée entre tests et requêtes.</li>
 </ul>
-${callout('fil', 'Suite du fil rouge', `<p>Garde ce prototype : à l'étape 3, on améliore ses schémas Pydantic. À l'étape 4, on le <strong>découpe</strong> selon la Clean Architecture.</p>`)}
+${callout('fil', 'Suite du fil rouge', `<p>Garde ce prototype : à l'étape 4, on améliore ses schémas Pydantic. À l'étape 5, on le <strong>découpe</strong> selon la Clean Architecture.</p>`)}
 `,
   exercise: {
     title: 'Compléter le CRUD v0',
@@ -178,6 +214,11 @@ async def delete_book(book_id: UUID) -> None:
     if _books.pop(book_id, None) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Livre introuvable")
 `}
+${explain([
+  [`@app.delete(..., status_code=status.HTTP_204_NO_CONTENT, tags=["Livres"])`, `Route <code>DELETE</code> qui répond 204 (sans corps). <code>tags</code> regroupe les routes par rubrique dans Swagger.`],
+  [`-> None`, `La fonction ne renvoie rien, ce qui est cohérent avec un 204.`],
+  [`_books.pop(book_id, None)`, `<code>pop</code> retire la clé et renvoie sa valeur, ou <code>None</code> (le second argument) si la clé n'existait pas. On supprime et on vérifie l'existence en une seule opération.`],
+])}
 ${sh`
 curl -s -X POST localhost:8000/books -H 'content-type: application/json' \
      -d '{"isbn":"9780134494166","title":"Clean Architecture","author":"Robert C. Martin"}'

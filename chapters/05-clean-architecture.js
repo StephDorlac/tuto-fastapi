@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch04',
+  id: 'ch05',
   title: 'Clean Architecture : structurer Biblio',
   subtitle: "La règle de dépendance, les quatre couches, l'arborescence du projet et un garde-fou automatique avec import-linter.",
   duration: '40 min',

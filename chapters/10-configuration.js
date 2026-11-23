@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch09',
+  id: 'ch10',
   title: 'Configuration & composition root',
   subtitle: "Typer la configuration avec pydantic-settings, gérer le cycle de vie avec lifespan et tout câbler dans une fabrique create_app().",
   duration: '35 min',
@@ -32,6 +32,14 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     return Settings()
 `}
+${explain([
+  [`class Settings(BaseSettings):`, `Une classe de configuration. À la création, chaque champ est lu dans les <strong>variables d'environnement</strong> (et le fichier <code>.env</code>), puis validé et converti selon son type (≈ <code>@ConfigurationProperties</code> / <code>IOptions&lt;T&gt;</code>).`],
+  [`SettingsConfigDict(env_prefix="BIBLIO_", env_file=".env", extra="ignore")`, `Le champ <code>database_url</code> sera lu dans la variable <code>BIBLIO_DATABASE_URL</code>. On lit aussi le fichier <code>.env</code> s'il existe, et on ignore les variables inconnues.`],
+  [`environment: Literal["dev", "test", "prod"] = "dev"`, `Seules ces trois valeurs sont acceptées. <code>BIBLIO_ENVIRONMENT=staging</code> ferait échouer le démarrage, avec un message clair.`],
+  [`db_echo: bool = False`, `Pydantic convertit le texte de la variable d'environnement : <code>"true"</code>, <code>"1"</code> ou <code>"yes"</code> donnent <code>True</code>.`],
+  [`@lru_cache
+def get_settings() -> Settings:`, `<code>@lru_cache</code> mémorise le résultat : la configuration n'est lue qu'au premier appel, puis la même instance est renvoyée. C'est un <strong>singleton paresseux</strong>.`],
+])}
 ${ini.file('.env')`
 # Ne pas committer : ajouter .env au .gitignore (fournir un .env.example)
 BIBLIO_ENVIRONMENT=dev
@@ -104,11 +112,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 app = create_app()
 `}
+${explain([
+  [`def create_app(settings: Settings | None = None) -> FastAPI:`, `Une <strong>fabrique d'application</strong>. Les tests pourront lui passer une configuration différente.`],
+  [`settings = settings or get_settings()`, `Si aucun réglage n'est fourni (<code>None</code> est « faux »), on charge celui de l'environnement.`],
+  [`@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:`, `Une fonction <strong>définie à l'intérieur d'une autre fonction</strong>. Elle a accès à <code>settings</code>, la variable de la fonction englobante (c'est une <em>closure</em>). Le décorateur en fait un context manager asynchrone, que FastAPI utilise pour le démarrage et l'arrêt de l'application.`],
+  [`engine, session_factory = create_engine_and_session_factory(
+    settings.database_url, echo=settings.db_echo
+)`, `Au démarrage, on crée le pool de connexions.`],
+  [`def uow_factory() -> UnitOfWork:
+    return SqlAlchemyUnitOfWork(session_factory)`, `Une petite fabrique qui renvoie une unité de travail neuve. Le type de retour <code>UnitOfWork</code> (le port) fait vérifier par mypy que <code>SqlAlchemyUnitOfWork</code> respecte bien le contrat.`],
+  [`app.state.uow_factory = uow_factory`, `On <strong>range la fonction</strong> (sans l'appeler : pas de parenthèses) dans <code>app.state</code>. La dépendance <code>get_uow</code> l'appellera à chaque requête.`],
+  [`yield`, `Tout ce qui précède s'exécute <strong>au démarrage</strong>, et l'application tourne pendant le <code>yield</code>. Ce qui suit s'exécute <strong>à l'arrêt</strong>, ici la fermeture du pool (≈ <code>@PostConstruct</code> / <code>@PreDestroy</code>).`],
+  [`app = FastAPI(
+    title=settings.app_name,
+    ...
+    lifespan=lifespan,
+)`, `On crée l'application en lui passant la fonction <code>lifespan</code>.`],
+  [`app.include_router(api_router)
+register_error_handlers(app)`, `On branche les routes et les gestionnaires d'erreurs : c'est le <strong>composition root</strong>, le seul endroit qui connaît toutes les couches.`],
+  [`@app.get("/health", tags=["Supervision"])`, `Une route déclarée directement dans la fabrique.`],
+  [`app = create_app()`, `Variable de module que <code>fastapi dev</code> et Uvicorn chargent : <code>biblio.main:app</code>.`],
+])}
 ${callout('clean', 'Pourquoi une fabrique create_app() ?', `
 <ul>
   <li><strong>Tests</strong> : chaque test peut créer une application neuve avec ses propres <code>Settings</code>, sans état partagé.</li>
   <li><strong>Lisibilité</strong> : tout le câblage est visible en un seul endroit, comme un <code>Program.cs</code> ou une classe <code>@Configuration</code>.</li>
-  <li><strong>Architecture</strong> : c'est le seul module autorisé à importer à la fois <code>infrastructure</code> et <code>presentation</code> (contrat import-linter de l'étape 4).</li>
+  <li><strong>Architecture</strong> : c'est le seul module autorisé à importer à la fois <code>infrastructure</code> et <code>presentation</code> (contrat import-linter de l'étape 5).</li>
 </ul>`)}
 ${callout('info', 'Le typage, garde-fou de l\'assemblage', `<p>La ligne <code>def uow_factory() -&gt; UnitOfWork: return SqlAlchemyUnitOfWork(...)</code> est l'endroit où mypy vérifie que l'adaptateur respecte le port. Si tu oublies <code>count_active_for_member</code> dans le repository des emprunts, <code>mypy --strict</code> échoue ici, avant même l'exécution.</p>`)}
 
@@ -156,6 +186,10 @@ class Settings(BaseSettings):
     ...
     cors_origins: list[str] = []
 `}
+${explain([
+  [`...`, `Ici, <code>...</code> remplace les champs déjà présentés : on ne montre que l'ajout.`],
+  [`cors_origins: list[str] = []`, `Une liste lue depuis l'environnement, au format JSON : <code>BIBLIO_CORS_ORIGINS='["http://localhost:5173"]'</code>. Un <code>[]</code> comme valeur par défaut ne pose pas de problème ici : Pydantic copie les valeurs par défaut pour chaque instance, contrairement aux paramètres de fonction.`],
+])}
 ${py.file('src/biblio/main.py (dans create_app)')`
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -167,6 +201,14 @@ from fastapi.middleware.cors import CORSMiddleware
             allow_headers=["Authorization", "Content-Type"],
         )
 `}
+${explain([
+  [`if settings.cors_origins:`, `On n'active CORS que si la liste n'est pas vide.`],
+  [`app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    ...
+)`, `Ajoute un <strong>middleware</strong> qui insère les en-têtes CORS dans les réponses. On passe la <strong>classe</strong>, et FastAPI l'instancie avec les arguments nommés qui suivent.`],
+])}
 ${ini.file('.env')`
 BIBLIO_CORS_ORIGINS=["http://localhost:5173"]
 `}

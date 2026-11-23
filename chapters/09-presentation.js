@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch08',
+  id: 'ch09',
   title: 'Présentation : routers, Depends & erreurs',
   subtitle: "Des routes fines qui traduisent HTTP ⇄ use cases, l'injection de dépendances de FastAPI et le mapping des erreurs métier en Problem Details (RFC 9457).",
   duration: '60 min',
@@ -26,6 +26,12 @@ Locale = Annotated[str, Depends(get_locale)]      # alias réutilisable
 async def hello(locale: Locale) -> dict[str, str]:
     return {"message": "Bonjour" if locale.startswith("fr") else "Hello"}
 `}
+${explain([
+  [`def get_locale(accept_language: Annotated[str | None, Header()] = None) -> str:`, `Une <strong>dépendance</strong> : une fonction ordinaire que FastAPI appellera pour nous. Ses paramètres sont résolus comme ceux d'un endpoint : ici, <code>Header()</code> indique de lire l'en-tête HTTP <code>Accept-Language</code>. Les <code>_</code> du nom Python deviennent des <code>-</code> dans le nom de l'en-tête.`],
+  [`return (accept_language or "fr").split(",")[0]`, `Si l'en-tête est absent, on prend <code>"fr"</code>. Puis on découpe sur les virgules et on garde le premier élément : <code>"fr-FR,en;q=0.8"</code> donne <code>"fr-FR"</code>.`],
+  [`Locale = Annotated[str, Depends(get_locale)]`, `Un <strong>alias de type</strong> qui veut dire « une <code>str</code> fournie par <code>get_locale</code> ». On le déclare une fois, puis on le réutilise partout.`],
+  [`async def hello(locale: Locale) -> dict[str, str]:`, `En voyant le type <code>Locale</code>, FastAPI appelle <code>get_locale(…)</code> avant l'endpoint et passe le résultat à <code>locale</code>. C'est l'équivalent d'une injection par paramètre.`],
+])}
 ${compare(['FastAPI', 'Spring', 'ASP.NET Core'], [
   ['<code>Depends(fn)</code> résolu à chaque requête', 'Bean <code>@RequestScope</code>', '<code>AddScoped&lt;T&gt;()</code>'],
   ['Cache par requête (une seule exécution)', 'Scope request', 'Scope scoped'],
@@ -36,7 +42,7 @@ ${compare(['FastAPI', 'Spring', 'ASP.NET Core'], [
 ${callout('java', 'Pas de conteneur IoC', `<p>Il n'y a pas d'enregistrement par type : FastAPI ne sait pas « résoudre un <code>UnitOfWork</code> » tout seul. Tu déclares <strong>explicitement</strong> une fonction fournisseuse. C'est plus verbeux qu'un <code>@Autowired</code>, mais tout est visible et navigable dans l'IDE, sans magie de scan.</p>`)}
 
 <h2>Les fournisseurs de Biblio</h2>
-<p>Le principe : les <em>singletons</em> (fabrique de UoW, horloge) sont déposés dans <code>app.state</code> par le composition root (étape 9). Les dépendances les récupèrent <strong>typés par leur port</strong>, puis fabriquent un use case par requête.</p>
+<p>Le principe : les <em>singletons</em> (fabrique de UoW, horloge) sont déposés dans <code>app.state</code> par le composition root (étape 10). Les dépendances les récupèrent <strong>typés par leur port</strong>, puis fabriquent un use case par requête.</p>
 ${py.file('src/biblio/presentation/dependencies.py')`
 from typing import Annotated
 
@@ -110,6 +116,15 @@ BorrowBookDep = Annotated[BorrowBook, Depends(get_borrow_book)]
 ReturnBookDep = Annotated[ReturnBook, Depends(get_return_book)]
 ListOverdueLoansDep = Annotated[ListOverdueLoans, Depends(get_list_overdue_loans)]
 `}
+${explain([
+  [`def get_uow(request: Request) -> UnitOfWork:`, `Une dépendance qui reçoit la requête courante. FastAPI fournit automatiquement tout paramètre de type <code>Request</code>.`],
+  [`uow: UnitOfWork = request.app.state.uow_factory()`, `<code>request.app</code> est l'application, et <code>.state</code> un espace de rangement libre où <code>main.py</code> a déposé une <strong>fabrique</strong>. On l'appelle (<code>()</code>) pour obtenir une unité de travail neuve à chaque requête. L'annotation <code>: UnitOfWork</code> indique son type à mypy, car <code>state</code> n'est pas typé.`],
+  [`UowDep = Annotated[UnitOfWork, Depends(get_uow)]`, `Un alias qui veut dire « une <code>UnitOfWork</code>, fournie par <code>get_uow</code> ».`],
+  [`def get_register_book(uow: UowDep) -> RegisterBook:
+    return RegisterBook(uow)`, `Les dépendances <strong>s'enchaînent</strong> : pour construire le use case, FastAPI résout d'abord <code>UowDep</code> en appelant <code>get_uow</code>. C'est l'équivalent d'une méthode <code>@Bean</code> de configuration, mais à portée « requête ».`],
+  [`def get_borrow_book(uow: UowDep, clock: ClockDep) -> BorrowBook:`, `Deux dépendances résolues, puis injectées dans le constructeur du use case.`],
+  [`RegisterBookDep = Annotated[RegisterBook, Depends(get_register_book)]`, `L'alias final, que les routes utiliseront : <code>use_case: RegisterBookDep</code>.`],
+])}
 ${callout('info', 'Pourquoi pas Depends(RegisterBook) directement ?', `<p>FastAPI sait utiliser une classe comme dépendance, en analysant son <code>__init__</code>. Mais il verrait <code>uow: UnitOfWork</code>, un type qu'il ne sait pas fournir, et tenterait d'en faire un paramètre de requête. Les fonctions fournisseuses gardent les use cases <strong>totalement ignorants</strong> de FastAPI.</p>`)}
 
 <h2>Les schémas de la présentation</h2>
@@ -138,6 +153,10 @@ class ProblemDetail(BaseModel):
     instance: str
     code: str
 `}
+${explain([
+  [`class Page(BaseModel, Generic[T]):`, `Un modèle Pydantic générique, pour décrire une page de résultats en JSON.`],
+  [`type: str = "about:blank"`, `Le champ s'appelle <code>type</code> (imposé par la RFC 9457). Utiliser ce nom pour un attribut est permis, même s'il masque localement la fonction native <code>type</code>.`],
+])}
 ${py.file('src/biblio/presentation/schemas/books.py')`
 from typing import Annotated, Self
 from uuid import UUID
@@ -198,6 +217,13 @@ class BookRead(BaseModel):
             available_copies=book.available_copies,
         )
 `}
+${explain([
+  [`def to_command(self) -> RegisterBookCommand:`, `Une méthode de conversion : le schéma HTTP produit la commande de l'application. La couche présentation dépend de l'application, et jamais l'inverse.`],
+  [`def to_command(self, book_id: UUID) -> RenameBookCommand:`, `L'id vient du <strong>chemin</strong> de l'URL et non du corps : on le reçoit en paramètre.`],
+  [`@classmethod
+def from_entity(cls, book: Book) -> Self:`, `Une fabrique : elle construit la réponse JSON à partir de l'entité. On l'appelle sur la classe : <code>BookRead.from_entity(book)</code>.`],
+  [`isbn=str(book.isbn)`, `Le value object <code>Isbn</code> redevient une chaîne pour le JSON.`],
+])}
 ${callout('clean', 'Conversions explicites', `<p><code>to_command()</code> et <code>from_entity()</code> sont les deux seuls points de passage entre HTTP et le cœur. On aurait pu utiliser <code>from_attributes=True</code>, mais <code>isbn</code> est un value object : une fabrique explicite est plus claire qu'une configuration de sérialisation.</p>`)}
 
 <h2>Le router du catalogue</h2>
@@ -255,6 +281,25 @@ async def register_book(
 async def rename_book(book_id: UUID, payload: BookUpdate, use_case: RenameBookDep) -> BookRead:
     return BookRead.from_entity(await use_case.execute(payload.to_command(book_id)))
 `}
+${explain([
+  [`router = APIRouter(prefix="/books", tags=["Livres"])`, `Un groupe de routes. Toutes commencent par <code>/books</code> et sont rangées sous « Livres » dans Swagger (≈ <code>@RestController @RequestMapping("/books")</code>).`],
+  [`NOT_FOUND = {status.HTTP_404_NOT_FOUND: {"model": ProblemDetail, "description": "Livre introuvable"}}`, `Un dictionnaire imbriqué qui sert uniquement à la <strong>documentation</strong> : « cette route peut répondre 404 avec un corps <code>ProblemDetail</code> ».`],
+  [`@router.get("")`, `La chaîne vide veut dire « le préfixe lui-même » : <code>GET /books</code>.`],
+  [`async def search_books(
+    use_case: SearchBooksDep,
+    q: Annotated[str | None, Query(...)] = None,
+    ...
+) -> Page[BookRead]:`, `FastAPI sait d'où vient chaque paramètre : <code>use_case</code> est injecté (<code>Depends</code>), et <code>q</code>, <code>limit</code> et <code>offset</code> viennent de la query string. Les paramètres <strong>sans</strong> valeur par défaut doivent être placés avant ceux qui en ont une.`],
+  [`Page[BookRead](
+    items=[BookRead.from_entity(b) for b in page.items],
+    ...
+)`, `On crée une page Pydantic de <code>BookRead</code>, et une compréhension convertit chaque entité en schéma de réponse.`],
+  [`return BookRead.from_entity(await use_case.execute(book_id))`, `De l'intérieur vers l'extérieur : on exécute le use case, on <code>await</code>e le livre, puis on le convertit pour la réponse.`],
+  [`async def register_book(
+    payload: BookCreate, use_case: RegisterBookDep, request: Request, response: Response
+) -> BookRead:`, `<code>payload</code> vient du corps JSON (c'est un modèle Pydantic). <code>request</code> et <code>response</code> sont fournis par FastAPI : ils servent ici à construire l'en-tête <code>Location</code>.`],
+  [`response.headers["Location"] = str(request.url_for("get_book", book_id=book.id))`, `<code>url_for("get_book", …)</code> reconstruit l'URL de la route <strong>nommée d'après sa fonction</strong> <code>get_book</code>. Le résultat est ajouté comme en-tête de la réponse 201.`],
+])}
 <p>Chaque route tient en 1 à 3 lignes : <strong>convertir l'entrée → exécuter le use case → convertir la sortie</strong>. Aucun <code>try/except</code> : les erreurs métier remontent jusqu'au gestionnaire global.</p>
 
 <h2>Assembler les routers</h2>
@@ -268,6 +313,11 @@ api_router.include_router(books.router)
 api_router.include_router(members.router)
 api_router.include_router(loans.router)
 `}
+${explain([
+  [`from biblio.presentation.routers import books, loans, members`, `Importe trois <strong>modules</strong> du package <code>routers</code>. On accède ensuite à leur variable <code>router</code> par <code>books.router</code>.`],
+  [`api_router = APIRouter(prefix="/api/v1")`, `Un router « parent » qui ajoute le préfixe de version.`],
+  [`api_router.include_router(books.router)`, `Branche le router des livres : ses routes deviennent <code>/api/v1/books…</code>.`],
+])}
 
 <h2>Erreurs métier → Problem Details</h2>
 <p>Plutôt que de parsemer les routes de <code>HTTPException</code>, on traduit <strong>une fois pour toutes</strong> les catégories d'erreurs du domaine en réponses
@@ -323,6 +373,26 @@ async def handle_domain_error(request: Request, exc: Exception) -> JSONResponse:
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(DomainError, handle_domain_error)   # couvre toutes les sous-classes
 `}
+${explain([
+  [`logger = logging.getLogger(__name__)`, `Un logger nommé d'après le module (<code>biblio.presentation.errors</code>), comme <code>LoggerFactory.getLogger(Xxx.class)</code>.`],
+  [`_STATUS_BY_ERROR: dict[type[DomainError], HTTPStatus] = {...}`, `Un dictionnaire dont les <strong>clés sont des classes</strong> d'exception et les valeurs des statuts HTTP. <code>type[DomainError]</code> se lit « la classe <code>DomainError</code> ou une sous-classe » (≈ <code>Class&lt;? extends DomainError&gt;</code>).`],
+  [`for error_type, http_status in _STATUS_BY_ERROR.items():
+    if isinstance(error, error_type):
+        return http_status`, `On parcourt les couples (classe, statut) et on renvoie le premier statut dont la classe correspond à l'erreur, sous-classes comprises.`],
+  [`return HTTPStatus.BAD_REQUEST`, `Valeur de repli si aucune classe ne correspond.`],
+  [`JSONResponse(
+    status_code=http_status,
+    media_type="application/problem+json",
+    content={...},
+)`, `Construit la réponse à la main : statut, type de contenu et corps JSON (un dictionnaire).`],
+  [`"title": http_status.phrase,
+"status": http_status.value,`, `<code>HTTPStatus.NOT_FOUND.phrase</code> vaut <code>"Not Found"</code>, et <code>.value</code> vaut <code>404</code>.`],
+  [`async def handle_domain_error(request: Request, exc: Exception) -> JSONResponse:`, `Le gestionnaire appelé par FastAPI quand une <code>DomainError</code> remonte d'un endpoint (≈ une méthode de <code>@ControllerAdvice</code>).`],
+  [`if not isinstance(exc, DomainError):
+    raise exc`, `Une garde pour mypy : après ce test, il sait que <code>exc</code> est une <code>DomainError</code>.`],
+  [`logger.info("Erreur métier %s sur %s : %s", type(exc).__name__, request.url.path, exc)`, `On passe les valeurs séparément au logger (<code>%s</code>), et non via une f-string : le message n'est formaté que s'il est vraiment écrit. <code>type(exc).__name__</code> donne le nom de la classe, par exemple <code>"BookNotFound"</code>.`],
+  [`app.add_exception_handler(DomainError, handle_domain_error)`, `Enregistre le gestionnaire pour <code>DomainError</code> et toutes ses sous-classes. On passe la fonction elle-même, sans parenthèses.`],
+])}
 ${http`
 POST /api/v1/loans
 
@@ -386,6 +456,10 @@ class MemberRead(BaseModel):
     def from_entity(cls, member: Member) -> Self:
         return cls(id=member.id, full_name=member.full_name, email=member.email)
 `}
+${explain([
+  [`email: EmailStr`, `Un type Pydantic qui valide le format d'une adresse e-mail. Une adresse invalide donne une 422.`],
+  [`email=str(self.email)`, `On convertit en <code>str</code> simple : l'application ne doit pas dépendre des types Pydantic.`],
+])}
 ${py.file('src/biblio/presentation/schemas/loans.py')`
 from datetime import datetime
 from typing import Self
@@ -475,6 +549,11 @@ async def borrow_book(payload: LoanCreate, use_case: BorrowBookDep) -> LoanRead:
 async def return_book(loan_id: UUID, use_case: ReturnBookDep) -> LoanRead:
     return LoanRead.from_entity(await use_case.execute(loan_id))
 `}
+${explain([
+  [`@router.get("/overdue")`, `Déclarée <strong>avant</strong> les routes <code>/{loan_id}</code> : FastAPI teste les routes dans l'ordre, et sinon <code>"overdue"</code> serait pris pour un identifiant.`],
+  [`return [LoanRead.from_entity(loan) for loan in await use_case.execute()]`, `On <code>await</code>e d'abord la liste des emprunts, puis on convertit chacun d'eux avec une compréhension.`],
+  [`@router.post("/{loan_id}/return")`, `Une route d'<strong>action</strong> : <code>POST /loans/{id}/return</code>.`],
+])}
 <p>Pourquoi <code>POST /loans/{id}/return</code> plutôt que <code>PATCH /loans/{id}</code> avec <code>{"returned_at": ...}</code> ? Le retour est une <strong>action métier</strong> : c'est le serveur qui fixe la date et applique les règles. Le client ne choisit pas la valeur de <code>returned_at</code>. Une sous-ressource d'action exprime mieux l'intention.</p>`,
   },
   quiz: [

@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch07',
+  id: 'ch08',
   title: 'Infrastructure : SQLAlchemy 2 async',
   subtitle: "Les adaptateurs de persistance : modèles ORM, mappers vers le domaine, repositories, Unit of Work concrète et migrations Alembic.",
   duration: '60 min',
@@ -43,6 +43,17 @@ async def create_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
 `}
+${explain([
+  [`from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine`, `Les briques asynchrones de SQLAlchemy : le moteur (pool de connexions), la session (≈ <code>EntityManager</code> / <code>DbContext</code>) et sa fabrique.`],
+  [`def create_engine_and_session_factory(
+    database_url: str, *, echo: bool = False
+) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:`, `Une signature longue répartie sur plusieurs lignes grâce aux parenthèses. <code>echo</code> est un paramètre nommé facultatif. La fonction renvoie un <strong>tuple de deux valeurs</strong> : le moteur et la fabrique de sessions.`],
+  [`create_async_engine(database_url, echo=echo)`, `Crée le pool de connexions à partir d'une URL comme <code>sqlite+aiosqlite:///./biblio.db</code>. Avec <code>echo=True</code>, chaque requête SQL est affichée dans la console.`],
+  [`async_sessionmaker(engine, expire_on_commit=False)`, `Une fabrique : chaque appel <code>session_factory()</code> crée une nouvelle session. <code>expire_on_commit=False</code> garde les objets lisibles après un commit.`],
+  [`return engine, session_factory`, `Renvoie les deux valeurs. L'appelant écrit <code>engine, factory = create_engine_and_session_factory(url)</code>.`],
+  [`async with engine.begin() as connection:`, `Ouvre une connexion <strong>dans une transaction</strong>, validée automatiquement à la sortie du bloc.`],
+  [`await connection.run_sync(Base.metadata.create_all)`, `<code>create_all</code> est une fonction synchrone qui crée toutes les tables connues. <code>run_sync</code> permet de l'exécuter sur une connexion asynchrone. On passe la fonction <strong>sans parenthèses</strong> : on transmet la fonction elle-même, sans l'appeler.`],
+])}
 ${callout('warn', 'expire_on_commit=False : indispensable en async', `
 <p>Par défaut, après un <code>commit()</code>, SQLAlchemy <em>expire</em> les objets : l'accès suivant à un attribut déclenche un rechargement SQL <strong>implicite</strong>.
 En async, une I/O implicite hors d'un <code>await</code> est impossible, et on obtient l'erreur <code>MissingGreenlet</code>. Pour la même raison, le <em>lazy loading</em> des relations est à proscrire en async :
@@ -90,6 +101,18 @@ class LoanModel(Base):
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))   # nullable déduit
 `}
+${explain([
+  [`class Base(DeclarativeBase):
+    pass`, `La classe mère de tous nos modèles ORM. Elle n'ajoute rien, d'où le <code>pass</code> (« bloc vide »).`],
+  [`class BookModel(Base):`, `Un <strong>modèle ORM</strong> : la représentation d'une table. Ce n'est <em>pas</em> l'entité du domaine <code>Book</code>, qui reste indépendante de la base.`],
+  [`__tablename__ = "books"`, `Le nom de la table SQL (≈ <code>@Table(name = "books")</code>).`],
+  [`id: Mapped[UUID] = mapped_column(primary_key=True)`, `Une colonne <code>id</code> de type UUID, clé primaire. <code>Mapped[UUID]</code> donne le type Python, et <code>mapped_column(…)</code> les détails SQL (≈ <code>@Id @Column</code>).`],
+  [`isbn: Mapped[str] = mapped_column(String(13), unique=True, index=True)`, `Un <code>VARCHAR(13)</code> unique et indexé.`],
+  [`total_copies: Mapped[int]`, `Sans <code>mapped_column</code>, SQLAlchemy déduit tout de l'annotation : une colonne entière NOT NULL.`],
+  [`book_id: Mapped[UUID] = mapped_column(ForeignKey("books.id"), index=True)`, `Une clé étrangère vers la colonne <code>id</code> de la table <code>books</code>.`],
+  [`Mapped[datetime | None]`, `Le <code>| None</code> rend la colonne <strong>nullable</strong>.`],
+  [`DateTime(timezone=True)`, `Une colonne date et heure qui conserve le fuseau horaire.`],
+])}
 <p>Le type Python suffit le plus souvent : <code>Mapped[int]</code> donne <code>INTEGER NOT NULL</code>, <code>Mapped[UUID]</code> donne un type UUID natif (ou <code>CHAR(32)</code> sous SQLite), et <code>Mapped[X | None]</code> rend la colonne nullable.</p>
 
 <h2>Les mappers ORM ⇄ domaine</h2>
@@ -157,6 +180,18 @@ def loan_to_model(loan: Loan) -> LoanModel:
         returned_at=loan.returned_at,
     )
 `}
+${explain([
+  [`def _as_utc(value: datetime) -> datetime:`, `Fonction utilitaire privée : SQLite renvoie des dates sans fuseau, alors on les déclare en UTC.`],
+  [`return value if value.tzinfo is not None else value.replace(tzinfo=UTC)`, `Un ternaire : si la date a déjà un fuseau (<code>tzinfo</code>), on la renvoie telle quelle, sinon on renvoie une copie avec le fuseau UTC.`],
+  [`def book_to_entity(model: BookModel) -> Book:`, `Un <strong>mapper</strong> : une simple fonction qui convertit une ligne ORM en entité du domaine (≈ MapStruct ou AutoMapper, mais écrit à la main).`],
+  [`return Book(
+    id=model.id,
+    isbn=Isbn(model.isbn),
+    ...
+)`, `On appelle le constructeur brut de l'entité, et non <code>Book.create</code> : on <strong>reconstitue</strong> un livre existant, on n'en crée pas un nouveau. La chaîne ISBN redevient un value object.`],
+  [`isbn=str(book.isbn)`, `Dans l'autre sens, le value object devient une simple chaîne pour la base, grâce à <code>__str__</code>.`],
+  [`returned_at=_as_utc(model.returned_at) if model.returned_at else None`, `Convertit seulement si une date est présente, sinon on garde <code>None</code>.`],
+])}
 ${callout('info', 'Alternative : le mapping impératif', `<p>On peut éviter les classes <code>*Model</code> en mappant directement les dataclasses du domaine sur des <code>Table</code> (<code>registry.map_imperatively</code>). C'est l'approche du livre <em>Architecture Patterns with Python</em> (« Cosmic Python »). Elle supprime les mappers, mais SQLAlchemy instrumente alors les entités du domaine. Ici, on privilégie une séparation stricte, plus lisible quand on débute.</p>`)}
 
 <h2>Les repositories</h2>
@@ -232,6 +267,30 @@ class SqlAlchemyMemberRepository:
 
 # SqlAlchemyLoanRepository : c'est l'exercice de cette étape !
 `}
+${explain([
+  [`from biblio.infrastructure.db import mappers`, `Importe le <strong>module</strong> <code>mappers</code> entier. On écrit ensuite <code>mappers.book_to_entity(…)</code>, ce qui rend la provenance explicite.`],
+  [`class SqlAlchemyBookRepository:`, `L'<strong>adaptateur</strong> qui implémente le port <code>BookRepository</code>. Il n'en hérite pas : il suffit d'avoir les mêmes méthodes (typage structurel).`],
+  [`model = await self._session.get(BookModel, book_id)`, `Charge une ligne par sa clé primaire (≈ <code>em.find(BookModel.class, id)</code>). Le résultat vaut <code>None</code> si la ligne n'existe pas.`],
+  [`return mappers.book_to_entity(model) if model else None`, `Convertit en entité si on a trouvé quelque chose, sinon renvoie <code>None</code>.`],
+  [`select(BookModel).where(BookModel.isbn == str(isbn))`, `Construit une requête <code>SELECT … FROM books WHERE isbn = :isbn</code>. <code>BookModel.isbn == …</code> ne renvoie pas un booléen : SQLAlchemy redéfinit <code>==</code> pour produire une <strong>condition SQL</strong>.`],
+  [`await self._session.scalar(...)`, `Exécute la requête et renvoie le premier objet, ou <code>None</code>.`],
+  [`stmt = (
+    select(BookModel)
+    .where(*self._filters(text))
+    .order_by(BookModel.title, BookModel.id)
+    .limit(limit)
+    .offset(offset)
+)`, `Une requête construite en <strong>chaînant des méthodes</strong>, comme un <em>query builder</em>. Les parenthèses extérieures permettent de l'écrire sur plusieurs lignes. <code>*self._filters(text)</code> déplie la liste de conditions en arguments séparés. Une liste vide signifie qu'il n'y a pas de <code>WHERE</code>.`],
+  [`models = await self._session.scalars(stmt)`, `Exécute la requête et renvoie les objets <code>BookModel</code> trouvés.`],
+  [`select(func.count()).select_from(BookModel)`, `<code>SELECT COUNT(*) FROM books</code>.`],
+  [`return (await self._session.scalar(stmt)) or 0`, `Si le résultat est <code>None</code>, <code>or 0</code> renvoie 0.`],
+  [`self._session.add(mappers.book_to_model(book))`, `Ajoute l'objet à la session. L'<code>INSERT</code> sera envoyé au commit. <code>add</code> n'est pas asynchrone : pas d'<code>await</code> ici.`],
+  [`await self._session.merge(...)`, `Met à jour la ligne qui a la même clé primaire (≈ <code>em.merge</code>).`],
+  [`@staticmethod
+def _filters(text: str | None) -> list[ColumnElement[bool]]:`, `Une méthode <strong>statique</strong> privée, sans <code>self</code>. Elle renvoie une liste de conditions SQL.`],
+  [`pattern = f"%{text}%"`, `Le motif <code>LIKE</code> : <code>%clean%</code>.`],
+  [`or_(BookModel.title.ilike(pattern), BookModel.author.ilike(pattern))`, `<code>title ILIKE '%clean%' OR author ILIKE '%clean%'</code>, c'est-à-dire un <code>LIKE</code> insensible à la casse. La fonction s'écrit <code>or_</code> avec un underscore, car <code>or</code> est un mot-clé réservé.`],
+])}
 ${callout('info', 'merge() pour la mise à jour', `<p><code>session.merge(model)</code> cherche l'objet persistant de même clé primaire, dans la session (<em>identity map</em>) ou en base, et y <strong>copie l'état</strong> du modèle transitoire. C'est l'équivalent de <code>EntityManager.merge()</code>. Ici, l'entité a été chargée juste avant dans la même session, donc aucune requête supplémentaire n'est émise.</p>`)}
 ${callout('clean', 'Pas d\'injection SQL', `<p>Le motif <code>f"%{text}%"</code> est passé comme <strong>paramètre lié</strong> par <code>ilike()</code>, et non concaténé dans le SQL. Le seul risque restant concerne les jokers <code>%</code> et <code>_</code> saisis par l'utilisateur (paramètre <code>escape=</code> si tu veux les neutraliser).</p>`)}
 
@@ -280,6 +339,15 @@ class SqlAlchemyUnitOfWork:
     async def rollback(self) -> None:
         await self._session.rollback()
 `}
+${explain([
+  [`books: SqlAlchemyBookRepository`, `Des <strong>déclarations d'attributs</strong> au niveau de la classe, sans valeur. Elles indiquent leur type à mypy. Les valeurs sont affectées dans <code>__aenter__</code>.`],
+  [`def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:`, `Le constructeur reçoit la fabrique de sessions, pas une session : chaque <code>async with</code> en ouvrira une neuve.`],
+  [`async def __aenter__(self) -> Self:`, `Appelée par <code>async with uow:</code>. Elle ouvre la session, crée les repositories qui la partagent, puis renvoie <code>self</code>.`],
+  [`self._session = self._session_factory()`, `On <strong>appelle</strong> la fabrique pour obtenir une nouvelle session.`],
+  [`if exc_type is not None:
+    await self.rollback()`, `Si le bloc <code>async with</code> s'est terminé par une exception, <code>exc_type</code> contient sa classe : on annule la transaction.`],
+  [`await self._session.close()`, `Dans tous les cas, on rend la connexion au pool. La méthode ne renvoie rien (<code>None</code>), donc l'exception éventuelle continue sa propagation, ce qui est voulu.`],
+])}
 ${py.file('src/biblio/infrastructure/clock.py')`
 from datetime import UTC, datetime
 
@@ -288,7 +356,11 @@ class SystemClock:
     def now(self) -> datetime:
         return datetime.now(UTC)
 `}
-<p>Note qu'aucune de ces classes n'hérite d'un port. Elles respectent les <code>Protocol</code> par leur forme, et mypy le vérifiera au moment de l'assemblage (étape 9).</p>
+${explain([
+  [`class SystemClock:`, `L'implémentation de production du port <code>Clock</code>.`],
+  [`return datetime.now(UTC)`, `L'heure actuelle en UTC. Une date avec fuseau évite les erreurs de comparaison.`],
+])}
+<p>Note qu'aucune de ces classes n'hérite d'un port. Elles respectent les <code>Protocol</code> par leur forme, et mypy le vérifiera au moment de l'assemblage (étape 10).</p>
 
 <h2>Essai sans FastAPI</h2>
 <p>Preuve que le cœur est indépendant du web : un petit script exécute un vrai use case sur une vraie base.</p>
@@ -314,6 +386,17 @@ async def main() -> None:
 
 asyncio.run(main())
 `}
+${explain([
+  [`async def main() -> None:`, `Une coroutine principale. Un script asynchrone a besoin d'un point d'entrée <code>async</code>.`],
+  [`engine, session_factory = create_engine_and_session_factory(...)`, `Récupère les deux valeurs renvoyées (unpacking du tuple).`],
+  [`use_case = RegisterBook(SqlAlchemyUnitOfWork(session_factory))`, `On <strong>assemble à la main</strong> : l'unité de travail SQLAlchemy est injectée dans le use case. FastAPI fera la même chose plus tard.`],
+  [`await use_case.execute(
+    RegisterBookCommand(isbn=..., title=..., author=..., copies=2)
+)`, `Exécute le use case avec une commande construite en ligne.`],
+  [`print(book)`, `Affiche l'entité grâce au <code>__repr__</code> généré par la dataclass.`],
+  [`await engine.dispose()`, `Ferme proprement le pool de connexions.`],
+  [`asyncio.run(main())`, `Lance la boucle d'événements et exécute <code>main()</code> jusqu'au bout.`],
+])}
 ${sh`uv run python scripts/try_register.py`}
 
 <h2>Migrations avec Alembic</h2>
@@ -329,6 +412,10 @@ from biblio.infrastructure.db.models import Base
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 target_metadata = Base.metadata
 `}
+${explain([
+  [`config.set_main_option("sqlalchemy.url", get_settings().database_url)`, `Dans le fichier généré par Alembic, <code>config</code> existe déjà. On lui donne l'URL de la base, lue dans notre configuration (étape 10).`],
+  [`target_metadata = Base.metadata`, `La description de toutes nos tables : Alembic la compare à la base réelle pour générer les migrations (≈ Flyway/Liquibase avec génération automatique, ou <code>dotnet ef migrations add</code>).`],
+])}
 ${sh`
 uv run alembic revision --autogenerate -m "create books, members, loans"
 uv run alembic upgrade head
@@ -378,7 +465,12 @@ class SqlAlchemyLoanRepository:
     async def update(self, loan: Loan) -> None:
         await self._session.merge(mappers.loan_to_model(loan))
 `}
-<p>La règle « en retard » existe désormais deux fois : dans <code>Loan.is_overdue</code> et dans cette requête. C'est un compromis courant, car on ne veut pas charger tous les emprunts en mémoire pour filtrer en Python. Un test d'intégration (étape 10) garantira que les deux versions restent cohérentes.</p>`,
+${explain([
+  [`.where(LoanModel.member_id == member_id, LoanModel.returned_at.is_(None))`, `Plusieurs conditions passées à <code>where</code> sont combinées avec <code>AND</code>. <code>.is_(None)</code> produit <code>IS NULL</code>, car le mot-clé <code>is</code> de Python ne peut pas être redéfini.`],
+  [`LoanModel.due_at < now`, `Là encore, <code>&lt;</code> produit une condition SQL et non un booléen Python.`],
+  [`.order_by(LoanModel.due_at)`, `Trie par date d'échéance, de la plus ancienne à la plus récente.`],
+])}
+<p>La règle « en retard » existe désormais deux fois : dans <code>Loan.is_overdue</code> et dans cette requête. C'est un compromis courant, car on ne veut pas charger tous les emprunts en mémoire pour filtrer en Python. Un test d'intégration (étape 11) garantira que les deux versions restent cohérentes.</p>`,
   },
   quiz: [
     {

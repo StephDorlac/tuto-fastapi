@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch05',
+  id: 'ch06',
   title: 'Couche domaine : entités & règles métier',
   subtitle: 'Le cœur de Biblio en Python pur : exceptions métier, value object Isbn, entités Book, Member et Loan riches en comportement.',
   duration: '50 min',
@@ -86,6 +86,18 @@ class DuplicateEmail(BusinessRuleViolation):
     def __init__(self, email: str) -> None:
         super().__init__(f"Un adhérent utilise déjà l'e-mail {email}")
 `}
+${explain([
+  [`class DomainError(Exception):
+    """Racine de toutes les erreurs métier."""`, `La classe racine de nos erreurs. La docstring suffit comme corps : pas besoin de <code>pass</code>.`],
+  [`class InvalidIsbn(InvalidValue):`, `Une hiérarchie d'exceptions : <code>InvalidIsbn</code> est une <code>InvalidValue</code>, qui est une <code>DomainError</code>. Un <code>except DomainError</code> attrapera donc les trois.`],
+  [`super().__init__(f"ISBN-13 invalide : {raw!r}")`, `Transmet le message au constructeur d'<code>Exception</code>. Le <code>!r</code> affiche la valeur entre guillemets, ce qui rend visibles d'éventuels espaces.`],
+  [`self.raw = raw`, `Conserve la valeur fautive dans un attribut, pour que le code qui attrape l'exception puisse l'exploiter.`],
+  [`entity_name = "Ressource"`, `Un <strong>attribut de classe</strong>, déclaré directement dans le corps de la classe et non dans <code>__init__</code>. Chaque sous-classe le redéfinit (<code>entity_name = "Livre"</code>).`],
+  [`def __init__(self, entity_id: object) -> None:`, `<code>object</code> accepte n'importe quel type d'identifiant.`],
+  [`f"{self.entity_name} {entity_id} introuvable"`, `<code>self.entity_name</code> lit l'attribut de la classe <strong>réelle</strong> de l'objet. Pour un <code>BookNotFound</code>, le message est donc « Livre … introuvable » : un polymorphisme sans réécrire le constructeur.`],
+  [`class BookNotFound(NotFoundError):
+    entity_name = "Livre"`, `Toute la sous-classe tient en une ligne : elle hérite du constructeur et ne change que le libellé.`],
+])}
 ${callout('clean', 'Des exceptions qui parlent métier', `<p>On lève <code>NoCopyAvailable(book_id)</code>, pas <code>ValueError("stock = 0")</code>. Le nom de la classe est la documentation, le message sert l'humain et les attributs servent le code.</p>`)}
 
 <h2>Value object : Isbn</h2>
@@ -122,6 +134,20 @@ def _has_valid_checksum(digits: str) -> bool:
     check_digit = (10 - weighted_sum % 10) % 10
     return check_digit == int(digits[12])
 `}
+${explain([
+  [`_ISBN13_LENGTH = 13`, `Une constante privée au module (<code>_</code> initial), qui évite un « nombre magique ».`],
+  [`@dataclass(frozen=True, slots=True)
+class Isbn:`, `Un <strong>value object</strong> : immuable (<code>frozen</code>) et comparé par valeur (le <code>__eq__</code> est généré).`],
+  [`value: str`, `L'unique champ. Le constructeur généré est <code>Isbn(value)</code>.`],
+  [`normalized = self.value.replace("-", "").replace(" ", "")`, `Retire tirets et espaces, pour obtenir les 13 chiffres seuls.`],
+  [`if not _has_valid_checksum(normalized):`, `Appelle la fonction de vérification définie plus bas dans le fichier. C'est possible car elle n'est appelée qu'à l'exécution, quand tout le module a déjà été chargé.`],
+  [`object.__setattr__(self, "value", normalized)`, `L'objet est <code>frozen</code> : <code>self.value = …</code> lèverait une erreur. On contourne volontairement la protection, une seule fois, au moment de la construction, pour stocker la forme normalisée.`],
+  [`def __str__(self) -> str:`, `<code>str(isbn)</code> ou <code>f"{isbn}"</code> affichent les 13 chiffres.`],
+  [`if len(digits) != _ISBN13_LENGTH or not digits.isdigit():`, `Si la longueur est mauvaise <strong>ou</strong> si la chaîne contient autre chose que des chiffres, l'ISBN est invalide.`],
+  [`sum(int(d) * (1 if i % 2 == 0 else 3) for i, d in enumerate(digits[:12]))`, `On lit de l'intérieur vers l'extérieur. <code>digits[:12]</code> prend les 12 premiers chiffres, et <code>enumerate</code> donne <code>(indice, chiffre)</code>. Chaque chiffre est multiplié par 1 aux positions paires et par 3 aux positions impaires (ternaire <code>a if cond else b</code>). <code>sum(…)</code> additionne le tout. L'expression <code>(… for …)</code> sans crochets est un <strong>générateur</strong> : une compréhension évaluée à la volée.`],
+  [`check_digit = (10 - weighted_sum % 10) % 10`, `La formule de la clé de contrôle ISBN-13. <code>%</code> est le modulo.`],
+  [`return check_digit == int(digits[12])`, `Compare la clé calculée au 13e chiffre (indice 12) et renvoie <code>True</code> ou <code>False</code>.`],
+])}
 ${py`
 >>> Isbn("978-0-13-449416-6")
 Isbn(value='9780134494166')
@@ -130,6 +156,7 @@ True
 >>> Isbn("9780134494167")
 biblio.domain.exceptions.InvalidIsbn: ISBN-13 invalide : '9780134494167'
 `}
+<p>Les lignes qui commencent par <code>&gt;&gt;&gt;</code> sont tapées dans la console interactive (<code>uv run python</code>). Les autres sont les réponses de Python.</p>
 
 <h2>Une base pour les entités</h2>
 <p>Une <strong>entité</strong> a une identité stable : deux livres sont « le même » s'ils ont le même <code>id</code>, même si leur titre a changé.
@@ -160,6 +187,18 @@ class Entity:
     def __hash__(self) -> int:
         return hash(self.id)
 `}
+${explain([
+  [`from biblio.domain.exceptions import (
+    BusinessRuleViolation,
+    ...
+)`, `Les parenthèses permettent d'écrire un import <strong>sur plusieurs lignes</strong>, un nom par ligne.`],
+  [`@dataclass(kw_only=True, eq=False)`, `<code>kw_only=True</code> oblige à construire avec des arguments nommés (<code>Book(id=…, title=…)</code>), ce qui est indispensable quand il y a beaucoup de champs. <code>eq=False</code> : on écrit nous-mêmes <code>__eq__</code>.`],
+  [`id: UUID`, `Le champ commun à toutes les entités. Les sous-classes ajouteront les leurs.`],
+  [`def __eq__(self, other: object) -> bool:`, `Redéfinit <code>==</code>. <code>other</code> peut être n'importe quoi, d'où le type <code>object</code>.`],
+  [`isinstance(other, Entity) and type(other) is type(self) and other.id == self.id`, `Égaux si l'autre est une entité, <strong>de la même classe exacte</strong>, avec le même id. Grâce au court-circuit de <code>and</code>, <code>other.id</code> n'est lu que si les deux premiers tests passent.`],
+  [`def __hash__(self) -> int:
+    return hash(self.id)`, `Si l'on redéfinit <code>__eq__</code>, il faut aussi un <code>__hash__</code> cohérent pour pouvoir ranger l'entité dans un <code>set</code> ou l'utiliser comme clé de <code>dict</code>. C'est la même règle que <code>equals</code>/<code>hashCode</code>.`],
+])}
 ${callout('java', 'equals/hashCode des entités JPA', `<p>C'est le même débat qu'avec les entités JPA ou EF Core : pour une entité, l'égalité porte sur l'identifiant. Ici l'<code>id</code> (UUID) est généré <strong>par le domaine</strong> à la création, pas par la base. L'entité est donc identifiable avant même d'être persistée.</p>`)}
 
 <h2>Book : protéger le stock d'exemplaires</h2>
@@ -213,6 +252,23 @@ class Book(Entity):
         if author is not None:
             self.author = _require_text(author, "author")
 `}
+${explain([
+  [`def _require_text(value: str, field_name: str) -> str:`, `Une fonction utilitaire <strong>privée au module</strong> (<code>_</code>), hors de toute classe : elle valide qu'un texte n'est pas vide et renvoie sa version nettoyée.`],
+  [`class Book(Entity):`, `<code>Book</code> hérite d'<code>Entity</code>, donc de son champ <code>id</code> et de son égalité par identifiant.`],
+  [`isbn: Isbn`, `Le champ est typé avec notre value object : impossible d'y mettre une chaîne non validée sans que mypy le signale.`],
+  [`@classmethod
+def create(cls, *, isbn: Isbn, ...) -> Self:`, `La <strong>fabrique</strong> (méthode de classe). Le <code>*</code> impose d'appeler <code>Book.create(isbn=…, title=…)</code> avec des noms. <code>-&gt; Self</code> : elle renvoie un <code>Book</code>.`],
+  [`return cls(
+    id=uuid4(),
+    ...
+)`, `<code>cls(…)</code> appelle le constructeur généré par la dataclass. L'identifiant est généré ici, par le domaine.`],
+  [`@property
+def is_available(self) -> bool:`, `Attribut calculé : on écrit <code>book.is_available</code>, sans parenthèses.`],
+  [`def lend(self) -> None:`, `Une méthode métier qui <strong>modifie</strong> l'objet (l'entité est mutable, contrairement au value object) après avoir vérifié la règle.`],
+  [`raise NoCopyAvailable(self.id)`, `Si la règle est violée, l'exception interrompt la méthode : le stock n'est jamais décrémenté.`],
+  [`def rename(self, *, title: str | None = None, author: str | None = None) -> None:`, `Deux paramètres facultatifs et nommés : <code>book.rename(title="…")</code> ne change que le titre.`],
+  [`if title is not None:`, `On ne met à jour que ce qui a été fourni.`],
+])}
 ${callout('info', 'Fabrique vs constructeur', `<p><code>Book.create(...)</code> applique les règles de <strong>création</strong> (stock initial = total). Le constructeur brut <code>Book(...)</code> sert à la <strong>reconstitution</strong> depuis la base, par les mappers de l'infrastructure : l'objet a déjà été validé lors de sa création.</p>`)}
 
 <h2>Member : la limite d'emprunts</h2>
@@ -235,6 +291,13 @@ class Member(Entity):
         if active_loans >= self.MAX_ACTIVE_LOANS:
             raise LoanLimitReached(self.id, self.MAX_ACTIVE_LOANS)
 `}
+${explain([
+  [`MAX_ACTIVE_LOANS: ClassVar[int] = 3`, `Une constante <strong>de classe</strong>, partagée par tous les adhérents (≈ <code>static final</code>). <code>ClassVar</code> empêche la dataclass d'en faire un paramètre du constructeur.`],
+  [`normalized_email = email.strip().lower()`, `Retire les espaces et passe en minuscules.`],
+  [`if "@" not in normalized_email:`, `<code>not in</code> : la chaîne ne contient pas d'arobase.`],
+  [`def ensure_can_borrow(self, active_loans: int) -> None:`, `La règle « 3 emprunts maximum ». Le nombre d'emprunts en cours est <strong>fourni par l'appelant</strong>, car l'entité n'a pas accès à la base.`],
+  [`self.MAX_ACTIVE_LOANS`, `On lit l'attribut de classe via l'instance (<code>self</code>), ce qui est permis.`],
+])}
 <p><code>ClassVar</code> indique à la dataclass que <code>MAX_ACTIVE_LOANS</code> est une constante de classe, et pas un champ du constructeur.</p>
 
 <h2>Loan : durée, retour, retard</h2>
@@ -265,6 +328,15 @@ class Loan(Entity):
     def is_overdue(self, now: datetime) -> bool:
         return self.is_active and now > self.due_at
 `}
+${explain([
+  [`DURATION: ClassVar[timedelta] = timedelta(days=21)`, `Une durée de 21 jours, constante de classe.`],
+  [`returned_at: datetime | None = None`, `Facultatif : <code>None</code> tant que le livre n'est pas rendu. Dans une dataclass, les champs avec valeur par défaut se placent en dernier.`],
+  [`def start(cls, *, book_id: UUID, member_id: UUID, now: datetime) -> Self:`, `Fabrique d'un nouvel emprunt. Le « maintenant » est un <strong>paramètre</strong>, pour que le code reste testable.`],
+  [`due_at=now + cls.DURATION`, `Une date plus une durée donne une nouvelle date : la date d'échéance.`],
+  [`return self.returned_at is None`, `L'emprunt est actif s'il n'a pas de date de retour.`],
+  [`def close(self, *, now: datetime) -> None:`, `Clôture l'emprunt, en refusant un double retour.`],
+  [`return self.is_active and now > self.due_at`, `En retard = toujours actif <strong>et</strong> échéance dépassée.`],
+])}
 ${callout('clean', 'Le temps est une dépendance', `<p>Aucune méthode n'appelle <code>datetime.now()</code> : l'instant présent est toujours <strong>passé en argument</strong>. Le domaine devient 100 % déterministe, et on teste un retard de 22 jours sans attendre 22 jours. L'application fournira cet instant via un port <code>Clock</code>.</p>`)}
 
 <h2>Pourquoi un modèle riche ?</h2>
@@ -359,7 +431,19 @@ def test_must_keep_at_least_one_copy() -> None:
 def test_add_copies_rejects_non_positive(count: int) -> None:
     with pytest.raises(InvalidValue):
         make_book().add_copies(count)
-`}`,
+`}
+${explain([
+  [`import pytest`, `Le framework de test. Avec pytest, pas de classe de test obligatoire : chaque fonction dont le nom commence par <code>test_</code> est un test.`],
+  [`def make_book(copies: int = 1) -> Book:`, `Une petite fabrique de données de test (≈ <em>Object Mother</em>). Ce n'est pas un test : son nom ne commence pas par <code>test_</code>.`],
+  [`def test_lend_decrements_available_copies() -> None:`, `Un test : une fonction sans paramètre, dont le nom décrit le comportement attendu.`],
+  [`assert book.available_copies == 1`, `L'assertion. En cas d'échec, pytest affiche les deux valeurs comparées, sans avoir besoin d'<code>assertEquals</code>.`],
+  [`with pytest.raises(NoCopyAvailable):
+    book.lend()`, `Le test réussit si le bloc lève <strong>cette</strong> exception, et échoue sinon (≈ <code>assertThrows</code>).`],
+  [`assert (book.total_copies, book.available_copies) == (3, 3)`, `Comparer deux tuples permet de vérifier plusieurs valeurs en une assertion.`],
+  [`@pytest.mark.parametrize("count", [0, -1])`, `Exécute le test <strong>deux fois</strong>, avec <code>count = 0</code> puis <code>count = -1</code> (≈ <code>@ParameterizedTest</code> / <code>[Theory]</code>).`],
+  [`def test_add_copies_rejects_non_positive(count: int) -> None:`, `pytest remplit le paramètre <code>count</code> avec chaque valeur de la liste.`],
+])}
+`,
   },
   quiz: [
     {

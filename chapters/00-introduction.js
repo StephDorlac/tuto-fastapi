@@ -44,9 +44,19 @@ de poser la structure du projet. C'est précisément l'objet de ce tutoriel.</p>
 </ol>
 
 ${callout('fil', 'Progression du fil rouge', `
-<p>Étapes 2 et 3 : un prototype naïf, tout dans un seul fichier. Étape 4 : on le <strong>restructure</strong> en couches.
-Étapes 5 à 9 : on construit chaque couche (domaine → application → infrastructure → présentation → assemblage).
-Étapes 10 à 12 : tests, sécurité, mise en production.</p>`)}
+<p>Étape 1 : les bases du langage Python, en partant de zéro. Étape 2 : le Python « idiomatique » utile pour une API.
+Étapes 3 et 4 : un prototype naïf, tout dans un seul fichier. Étape 5 : on le <strong>restructure</strong> en couches.
+Étapes 6 à 10 : on construit chaque couche (domaine → application → infrastructure → présentation → assemblage).
+Étapes 11 à 13 : tests, sécurité, mise en production.</p>`)}
+
+${callout('tip', 'Tu ne connais pas Python ? Pas de souci', `
+<p>Le tutoriel ne suppose <strong>aucune</strong> connaissance de Python. L'<a href="#/ch01">étape 1</a> présente le langage depuis le début, en le comparant à Java et C#.
+Ensuite, trois aides t'accompagnent dans tout le parcours :</p>
+<ul>
+  <li>dans les blocs de code, <span class="g-demo">les mots soulignés en pointillé</span> affichent leur définition au survol (ou au toucher) ;</li>
+  <li>sous les extraits importants, un encadré <strong>🔎 Décryptage ligne à ligne</strong> explique chaque instruction ;</li>
+  <li>le <a href="#/lexique">📖 Lexique Python</a> regroupe tous les mots-clés et notions, avec leur équivalent Java / C#.</li>
+</ul>`)}
 
 <h2>Installer l'outillage : uv</h2>
 <p><a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener">uv</a> est le gestionnaire de projets Python moderne (écrit en Rust par Astral, les auteurs de Ruff).
@@ -139,7 +149,7 @@ uv run ruff --version
 </ul>
 ${callout('tip', 'Ton réflexe "compilateur"', `
 <p>En Java ou en C#, le compilateur bloque les erreurs de type. En Python, <strong>rien ne les bloque à l'exécution</strong>.
-Pour retrouver ce filet de sécurité, on lancera <code>mypy --strict</code> et <code>ruff</code> en continu (étape 12). Prends l'habitude d'activer le mode strict de Pylance dès maintenant.</p>`)}
+Pour retrouver ce filet de sécurité, on lancera <code>mypy --strict</code> et <code>ruff</code> en continu (étape 13). Prends l'habitude d'activer le mode strict de Pylance dès maintenant.</p>`)}
 `,
   exercise: {
     title: 'Initialiser le dépôt',

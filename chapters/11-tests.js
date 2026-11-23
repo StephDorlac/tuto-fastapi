@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch10',
+  id: 'ch11',
   title: 'Tester à chaque niveau',
   subtitle: "La pyramide de tests de Biblio : domaine pur, use cases avec des fakes en mémoire, repositories sur une vraie base, et API via TestClient + dependency_overrides.",
   duration: '60 min',
@@ -75,6 +75,13 @@ def test_invalid_isbn_is_rejected(raw: str) -> None:
 def test_isbn_equality_is_by_value() -> None:
     assert Isbn("978-0-13-449416-6") == Isbn("9780134494166")
 `}
+${explain([
+  [`@pytest.mark.parametrize("raw", ["978-0-13-449416-6", "9780134494166", "978 0 13 449416 6"])`, `Le test sera exécuté <strong>trois fois</strong>, avec <code>raw</code> égal à chaque valeur de la liste. pytest affiche un résultat par valeur.`],
+  [`def test_isbn_is_normalized(raw: str) -> None:`, `Le nom du paramètre doit correspondre exactement à la chaîne <code>"raw"</code> du décorateur.`],
+  [`assert Isbn(raw).value == "9780134494166"`, `Un simple <code>assert</code>. En cas d'échec, pytest affiche la valeur obtenue et la valeur attendue.`],
+  [`with pytest.raises(InvalidIsbn):
+    Isbn(raw)`, `Vérifie que la construction <strong>lève</strong> bien <code>InvalidIsbn</code>.`],
+])}
 
 <h2>Des fakes plutôt que des mocks</h2>
 <p>Un <strong>fake</strong> est une implémentation réelle mais simplifiée d'un port : un repository qui stocke dans un <code>dict</code>.
@@ -194,6 +201,24 @@ class FixedClock:
     def advance(self, delta: timedelta) -> None:
         self.current += delta
 `}
+${explain([
+  [`import copy`, `Le module standard de copie d'objets.`],
+  [`self._items: dict[UUID, Book] = {}`, `Le « stockage » du fake : un dictionnaire id → livre, créé vide pour chaque instance.`],
+  [`return copy.deepcopy(book) if book else None`, `Renvoie une <strong>copie profonde</strong>, pour imiter une vraie base : le use case ne doit pas pouvoir modifier le stockage sans appeler <code>update</code>.`],
+  [`next((copy.deepcopy(b) for b in self._items.values() if b.isbn == isbn), None)`, `De l'intérieur vers l'extérieur. Le générateur <code>(… for … if …)</code> produit les livres dont l'ISBN correspond, et <code>next(générateur, None)</code> prend le <strong>premier</strong>, ou <code>None</code> s'il n'y en a aucun (≈ <code>stream().filter().findFirst().orElse(null)</code>).`],
+  [`sorted(self._items.values(), key=lambda b: (b.title, str(b.id)))`, `Trie par titre, puis par id en cas d'égalité. Une clé de tri qui est un <strong>tuple</strong> trie sur plusieurs critères.`],
+  [`needle in b.title.lower() or needle in b.author.lower()`, `Le texte recherché est-il contenu dans le titre <strong>ou</strong> dans l'auteur ?`],
+  [`sum(1 for loan in self._items.values() if loan.member_id == member_id and loan.is_active)`, `Compte les éléments qui satisfont la condition : on additionne un 1 pour chacun.`],
+  [`class FakeUnitOfWork:`, `Une fausse unité de travail, qui respecte le port <code>UnitOfWork</code> sans en hériter.`],
+  [`self.commits = 0`, `Un compteur, pour vérifier dans les tests qu'un commit a bien eu lieu (ou non).`],
+  [`async def __aenter__(self) -> Self:
+    return self`, `Rien à ouvrir : on renvoie simplement l'objet.`],
+  [`@dataclass
+class FixedClock:`, `Une horloge figée, sous forme de dataclass modifiable.`],
+  [`current: datetime = field(default_factory=lambda: datetime(2026, 1, 15, 10, 0, tzinfo=UTC))`, `La valeur par défaut est fabriquée par une <code>lambda</code> appelée à chaque création : le 15 janvier 2026 à 10 h UTC.`],
+  [`def advance(self, delta: timedelta) -> None:
+    self.current += delta`, `Fait « avancer le temps » dans un test : <code>clock.advance(timedelta(days=22))</code>.`],
+])}
 ${callout('tip', 'Pourquoi deepcopy ?', `<p>Sans copie, le use case modifierait directement l'objet stocké, et un oubli de <code>await uow.books.update(book)</code> passerait inaperçu en test… puis échouerait en production. Copier à l'entrée et à la sortie reproduit le comportement d'une vraie base.</p>`)}
 ${py.file('tests/conftest.py')`
 import pytest
@@ -210,6 +235,11 @@ def uow() -> FakeUnitOfWork:
 def clock() -> FixedClock:
     return FixedClock()
 `}
+${explain([
+  [`conftest.py`, `Un fichier spécial de pytest : les fixtures qui y sont définies sont disponibles dans <strong>tous</strong> les tests du dossier et de ses sous-dossiers, sans import.`],
+  [`@pytest.fixture
+def uow() -> FakeUnitOfWork:`, `Déclare une <strong>fixture</strong> nommée <code>uow</code>. Tout test qui a un paramètre <code>uow</code> recevra automatiquement le résultat de cette fonction, recréé pour chaque test. C'est de l'injection par nom de paramètre.`],
+])}
 
 <h2>Tests des use cases</h2>
 ${py.file('tests/unit/application/test_borrow_book.py')`
@@ -275,6 +305,14 @@ async def test_member_cannot_exceed_active_loan_limit(uow: FakeUnitOfWork, clock
     with pytest.raises(LoanLimitReached):
         await use_case.execute(BorrowBookCommand(book_id=book.id, member_id=member.id))
 `}
+${explain([
+  [`async def given_book(uow: FakeUnitOfWork, *, copies: int = 1) -> Book:`, `Un helper de préparation (« étant donné un livre… »). Il est asynchrone, car l'ajout au repository l'est.`],
+  [`async def test_borrowing_opens_a_loan_and_takes_a_copy(uow: FakeUnitOfWork, clock: FixedClock) -> None:`, `Un test <strong>asynchrone</strong> : pytest-asyncio l'exécute dans une boucle d'événements (ce qui suppose <code>asyncio_mode = "auto"</code> dans la configuration). Les paramètres <code>uow</code> et <code>clock</code> sont les fixtures de <code>conftest.py</code>.`],
+  [`book, member = await given_book(uow), await given_member(uow)`, `Deux appels sur une ligne, dont les résultats sont rangés dans deux variables (unpacking).`],
+  [`await BorrowBook(uow, clock).execute(...)`, `On construit le use case avec les fakes, puis on l'exécute.`],
+  [`assert stored_book is not None and stored_book.available_copies == 0`, `Le premier test rassure aussi mypy : après lui, <code>stored_book</code> n'est plus <code>None</code>.`],
+  [`for _ in range(Member.MAX_ACTIVE_LOANS):`, `Répète 3 fois. <code>_</code> est le nom conventionnel d'une variable dont on ne se sert pas.`],
+])}
 ${callout('clean', 'Des tests lisibles', `<p>Structure <em>Arrange / Act / Assert</em> séparée par des lignes vides, helpers <code>given_*</code> au vocabulaire métier, nom de test qui décrit la règle (<code>test_member_cannot_exceed_active_loan_limit</code>). Un test qui échoue doit expliquer <strong>quelle règle</strong> est cassée.</p>`)}
 
 <h2>Tests d'API</h2>
@@ -297,6 +335,12 @@ def client(uow: FakeUnitOfWork, clock: FixedClock) -> TestClient:
     # Sans "with TestClient(app)", le lifespan n'est pas exécuté : aucune base n'est ouverte.
     return TestClient(app)
 `}
+${explain([
+  [`def client(uow: FakeUnitOfWork, clock: FixedClock) -> TestClient:`, `Une fixture qui <strong>dépend d'autres fixtures</strong>. pytest fournit d'abord <code>uow</code> et <code>clock</code>, puis la fixture <code>client</code>, qui partage donc les mêmes fakes que le test.`],
+  [`create_app(Settings(environment="test", create_schema_on_startup=False))`, `On crée une application avec une configuration de test, passée explicitement.`],
+  [`app.dependency_overrides[get_uow] = lambda: uow`, `Remplace la dépendance <code>get_uow</code> par une fonction qui renvoie notre fake. La clé du dictionnaire est la <strong>fonction</strong> <code>get_uow</code> elle-même (≈ <code>@MockBean</code>).`],
+  [`return TestClient(app)`, `Un client HTTP qui appelle l'application en mémoire.`],
+])}
 ${py.file('tests/api/test_books_api.py')`
 from fastapi.testclient import TestClient
 
@@ -344,6 +388,15 @@ def test_search_paginates(client: TestClient) -> None:
     assert page["total"] == 2
     assert [b["title"] for b in page["items"]] == ["Clean Architecture"]
 `}
+${explain([
+  [`BOOK = {"isbn": ..., "title": ..., ...}`, `Un dictionnaire de données réutilisé par plusieurs tests (une constante de module, en majuscules).`],
+  [`response = client.post("/api/v1/books", json=BOOK)`, `Envoie un <code>POST</code> avec <code>BOOK</code> sérialisé en JSON dans le corps.`],
+  [`body = response.json()`, `Décode le corps JSON de la réponse en dictionnaire Python.`],
+  [`response.headers["location"].endswith(f"/api/v1/books/{body['id']}")`, `Les en-têtes ne tiennent pas compte de la casse. Dans la f-string, on utilise des apostrophes pour <code>'id'</code>, car la chaîne est déjà délimitée par des guillemets.`],
+  [`BOOK | {"isbn": "9780134494167"}`, `Entre deux dictionnaires, <code>|</code> produit un <strong>nouveau dictionnaire fusionné</strong> : une copie de <code>BOOK</code> où l'ISBN est remplacé. <code>BOOK</code> lui-même n'est pas modifié.`],
+  [`client.get("/api/v1/books", params={"q": "clean", "limit": 1}).json()`, `<code>params</code> construit la query string <code>?q=clean&amp;limit=1</code>.`],
+  [`assert [b["title"] for b in page["items"]] == ["Clean Architecture"]`, `On extrait les titres avec une compréhension, puis on compare à la liste attendue.`],
+])}
 
 <h2>Tests d'intégration des repositories</h2>
 ${py.file('tests/integration/test_repositories.py')`
@@ -411,6 +464,16 @@ async def test_list_overdue_matches_domain_rule(session_factory: async_sessionma
     assert [loan.id for loan in overdue] == [late.id]
     assert all(loan.is_overdue(now) for loan in overdue)   # requête SQL ≡ règle du domaine
 `}
+${explain([
+  [`@pytest.fixture
+async def session_factory(tmp_path: Path) -> AsyncIterator[...]:`, `Une fixture <strong>asynchrone avec <code>yield</code></strong>. <code>tmp_path</code> est une fixture intégrée à pytest : un dossier temporaire, propre à chaque test.`],
+  [`f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"`, `<code>/</code> entre un <code>Path</code> et une chaîne <strong>assemble un chemin</strong> (≈ <code>path.resolve("test.db")</code>), pour une base SQLite toute neuve à chaque test.`],
+  [`yield factory
+await engine.dispose()`, `Le test reçoit <code>factory</code>. Une fois le test terminé, pytest reprend après le <code>yield</code> pour nettoyer (≈ <code>@BeforeEach</code> et <code>@AfterEach</code> réunis dans une seule fonction).`],
+  [`async with SqlAlchemyUnitOfWork(session_factory) as uow:`, `On utilise la <strong>vraie</strong> unité de travail, sur une vraie base SQLite.`],
+  [`assert loaded == book`, `Égalité d'entité : même classe et même id (notre <code>__eq__</code>).`],
+  [`assert all(loan.is_overdue(now) for loan in overdue)`, `<code>all(…)</code> vaut <code>True</code> si chaque élément vérifie la condition.`],
+])}
 
 <h2>Lancer les tests</h2>
 ${sh`
@@ -487,6 +550,11 @@ async def test_unreturned_loan_becomes_overdue(uow: FakeUnitOfWork, clock: Fixed
 
     assert [o.id for o in overdue] == [loan.id]
 `}
+${explain([
+  [`from tests.unit.application.test_borrow_book import given_book, given_member`, `On réutilise les helpers d'un autre fichier de test. Un fichier de test est un module comme un autre.`],
+  [`clock.advance(timedelta(days=3))`, `Avance l'horloge figée de 3 jours.`],
+  [`await ReturnBook(uow, clock).execute(uuid4())`, `Un id aléatoire, qui n'existe donc pas : on attend <code>LoanNotFound</code>.`],
+])}
 <p>Importer des helpers depuis un autre module de test fonctionne, mais à partir de deux usages, range-les dans <code>tests/fakes.py</code> (ou un module <code>tests/builders.py</code>) pour éviter le couplage entre fichiers de tests.</p>`,
   },
   quiz: [

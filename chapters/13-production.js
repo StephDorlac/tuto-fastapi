@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch12',
+  id: 'ch13',
   title: 'Vers la production',
   subtitle: "Qualité outillée (Ruff, mypy strict, import-linter), logs corrélés, image Docker multi-étapes avec uv, pipeline CI et pistes pour aller plus loin.",
   duration: '50 min',
@@ -80,6 +80,21 @@ def register_request_logging(app: FastAPI) -> None:
         )
         return response
 `}
+${explain([
+  [`from collections.abc import Awaitable, Callable`, `Types pour décrire une fonction (<code>Callable</code>) qui renvoie quelque chose qu'on peut <code>await</code>er (<code>Awaitable</code>).`],
+  [`def register_request_logging(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def log_requests(...)`, `La fonction <code>log_requests</code> est définie <strong>à l'intérieur</strong> de <code>register_request_logging</code> et enregistrée par le décorateur comme <strong>middleware HTTP</strong> : elle enveloppe chaque requête (≈ un <code>Filter</code> servlet ou un middleware ASP.NET).`],
+  [`call_next: Callable[[Request], Awaitable[Response]]`, `<code>call_next</code> est une fonction qui reçoit la requête et renvoie (de façon asynchrone) la réponse : c'est « la suite de la chaîne » (≈ <code>chain.doFilter</code> / <code>next()</code>).`],
+  [`request.headers.get("X-Request-ID") or uuid4().hex`, `Réutilise l'identifiant de corrélation envoyé par le client, ou en génère un. <code>.hex</code> donne l'UUID sous forme de 32 caractères hexadécimaux.`],
+  [`started = time.perf_counter()`, `Un chronomètre de haute précision.`],
+  [`response = await call_next(request)`, `On laisse FastAPI traiter la requête (routes, dépendances…) et on récupère la réponse.`],
+  [`logger.info(
+    "%s %s -> %d (%.1f ms)",
+    request.method, request.url.path, response.status_code, elapsed_ms,
+    extra={"request_id": request_id},
+)`, `Un message au format <code>printf</code> : <code>%s</code> pour une chaîne, <code>%d</code> pour un entier, <code>%.1f</code> pour un nombre à une décimale. <code>extra</code> ajoute un champ structuré au log.`],
+])}
 ${py.file('src/biblio/main.py (dans create_app)')`
 import logging
 
@@ -89,6 +104,13 @@ import logging
     )
     register_request_logging(app)
 `}
+${explain([
+  [`logging.basicConfig(
+    level=logging.DEBUG if settings.environment == "dev" else logging.INFO,
+    ...
+)`, `Configure les logs une fois pour toutes. Le niveau est choisi par un ternaire : <code>DEBUG</code> en dev, <code>INFO</code> ailleurs.`],
+  [`format="%(asctime)s %(levelname)s %(name)s %(message)s"`, `Le gabarit de chaque ligne de log : date, niveau, nom du logger, message (≈ <em>pattern</em> Logback).`],
+])}
 ${callout('tip', 'En production', `<p>Préfère des logs <strong>JSON</strong> (<code>structlog</code> ou <code>python-json-logger</code>) pour ton agrégateur (ELK, Loki, Datadog). Pour les traces distribuées, <code>opentelemetry-instrumentation-fastapi</code> et <code>-sqlalchemy</code> instrumentent l'application en quelques lignes.</p>`)}
 
 <h2>Image Docker multi-étapes avec uv</h2>
@@ -188,7 +210,7 @@ ${callout('fil', 'Bravo, le fil rouge est terminé ! 🏁', `<p>Tu as construit 
   <li>elle utilise le driver <code>asyncpg</code> ;</li>
   <li>elle tourne en <code>BIBLIO_ENVIRONMENT=prod</code> avec un vrai secret JWT.</li>
 </ul>
-<p>Rejoue ensuite le scénario de l'étape 9 contre cette pile. Le code applicatif ne doit pas changer d'une ligne : seule la configuration change.</p>`,
+<p>Rejoue ensuite le scénario de l'étape 10 contre cette pile. Le code applicatif ne doit pas changer d'une ligne : seule la configuration change.</p>`,
     hints: [
       "<code>uv add asyncpg</code>, puis une URL de la forme <code>postgresql+asyncpg://user:pass@db:5432/biblio</code>.",
       "<code>depends_on: db: condition: service_healthy</code> associé à un <code>healthcheck</code> qui exécute <code>pg_isready</code>.",

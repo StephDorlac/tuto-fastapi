@@ -60,8 +60,32 @@ const PY_BUILTINS = new Set(('print len str int float bool list dict set tuple o
   'range enumerate zip sum any all min max sorted open repr hash id property classmethod staticmethod getattr setattr ' +
   'hasattr iter next map filter bytes frozenset Exception ValueError TypeError KeyError RuntimeError NotImplementedError').split(' '));
 
+/** Clé de lexique d'un jeton Python (voir assets/glossary.js), ou null. */
+function glossaryKeyFor(kind, token, code, index) {
+  if (typeof glossaryLookup !== 'function') return null;
+  if (kind === 'str') {
+    const prefix = token.match(/^[A-Za-z]*/)[0].toLowerCase();
+    if (prefix.includes('f')) return 'f-string';
+    if (prefix.includes('b')) return 'bytes';
+    const lineStart = code.lastIndexOf('\n', index - 1) + 1;
+    if (/^("""|\'\'\')/.test(token) && !code.slice(lineStart, index).trim()) return 'docstring';
+    return null;
+  }
+  if (kind === 'deco') {
+    const full = `@${token.slice(1)}`;
+    if (glossaryLookup(full)) return full;
+    const first = `@${token.slice(1).split('.')[0]}`;
+    return glossaryLookup(first) ? first : null;
+  }
+  if (kind === 'sym') return glossaryLookup(token) ? token : null;
+  const afterDot = code[index - 1] === '.';
+  const key = afterDot ? `.${token}` : token;
+  const entry = glossaryLookup(key);
+  return entry && !entry.concept ? key : null;
+}
+
 function highlightPython(code) {
-  const re = /(#[^\n]*)|((?:[rRbBfFuU]{1,2})?(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'))|(@[A-Za-z_][\w.]*)|(\b\d[\d_]*(?:\.\d+)?\b)|([A-Za-z_]\w*)/g;
+  const re = /(#[^\n]*)|((?:[rRbBfFuU]{1,2})?(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'))|(@[A-Za-z_][\w.]*)|(\b\d[\d_]*(?:\.\d+)?\b)|([A-Za-z_]\w*)|(->|\.\.\.|\*\*?|\|)/g;
   let out = '';
   let last = 0;
   let previousIdent = '';
@@ -70,10 +94,12 @@ function highlightPython(code) {
     out += escapeHtml(code.slice(last, m.index));
     const token = m[0];
     let cls = null;
+    let kind = 'ident';
     if (m[1]) cls = 'com';
-    else if (m[2]) cls = 'str';
-    else if (m[3]) cls = 'deco';
+    else if (m[2]) { cls = 'str'; kind = 'str'; }
+    else if (m[3]) { cls = 'deco'; kind = 'deco'; }
     else if (m[4]) cls = 'num';
+    else if (m[6]) { cls = 'op'; kind = 'sym'; }
     else {
       if (PY_KEYWORDS.has(token)) cls = 'kw';
       else if (previousIdent === 'def') cls = 'fn';
@@ -82,8 +108,11 @@ function highlightPython(code) {
       else if (PY_BUILTINS.has(token)) cls = 'bi';
       else if (/^[A-Z]/.test(token)) cls = (token.length > 1 && /^[A-Z0-9_]+$/.test(token)) ? 'const' : 'cls';
     }
+    const gkey = (m[1] || m[4]) ? null : glossaryKeyFor(kind, token, code, m.index);
     previousIdent = m[5] ? token : '';
-    out += cls ? `<span class="t-${cls}">${escapeHtml(token)}</span>` : escapeHtml(token);
+    const classes = [cls && `t-${cls}`, gkey && 'g'].filter(Boolean).join(' ');
+    const attr = gkey ? ` data-g="${escapeHtml(gkey)}"` : '';
+    out += classes ? `<span class="${classes}"${attr}>${escapeHtml(token)}</span>` : escapeHtml(token);
     last = re.lastIndex;
   }
   return out + escapeHtml(code.slice(last));
@@ -136,8 +165,9 @@ function codeBlock(lang, raw, filename) {
   const id = `code-${codeSequence++}`;
   CODE_STORE[id] = code;
   const file = filename ? `<span class="filename">${escapeHtml(filename)}</span>` : '';
+  const hint = lang === 'python' ? '<span class="code-hint" title="Survole les mots soulignés pour leur définition">💬 survole les mots soulignés</span>' : '';
   return `<figure class="code"><figcaption><span class="lang lang-${lang}">${LANG_LABELS[lang] || lang}</span>${file}` +
-    `<button class="copy-btn" type="button" data-code="${id}">Copier</button></figcaption>` +
+    `${hint}<button class="copy-btn" type="button" data-code="${id}">Copier</button></figcaption>` +
     `<pre><code>${highlight(lang, code)}</code></pre></figure>`;
 }
 
@@ -179,6 +209,26 @@ function compare(headers, rows) {
   return `<div class="table-wrap"><table class="compare"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
+/**
+ * Décryptage ligne à ligne d'un bloc de code, à placer juste après lui.
+ *   explain([
+ *     ['def lend(self) -> None:', 'Déclare la méthode <code>lend</code>…'],
+ *     ...
+ *   ])
+ * Le fragment de code est coloré (et porte les infobulles du lexique).
+ * Second paramètre facultatif : le langage du fragment ('python' par défaut).
+ */
+function explain(items, lang = 'python') {
+  const rows = items.map(([code, text]) => `
+    <div class="decode-row"><dt><code>${highlight(lang, dedent(code))}</code></dt><dd>${text}</dd></div>`).join('');
+  return `<details class="decode" open><summary>🔎 Décryptage ligne à ligne</summary><dl>${rows}</dl></details>`;
+}
+
+/** Encadré de définition (vocabulaire), ex. define('Coroutine', '…'). */
+function define(term, body) {
+  return `<div class="define"><div class="define-term">📘 ${term}</div><div class="define-body">${body}</div></div>`;
+}
+
 /** Arborescence de fichiers simple. */
 function tree(text) {
   return `<pre class="tree">${escapeHtml(dedent(text))
@@ -191,12 +241,24 @@ function tree(text) {
 const STORE_KEY = 'fastapi-clean-lab:v1';
 const PASS_RATIO = 0.7;
 
+const STATE_SCHEMA = 2;
+
+/** v1 → v2 : l'étape « Python de zéro » a été insérée en position 1, les suivantes sont décalées. */
+function migrateState(saved) {
+  if (!saved || saved.schema >= STATE_SCHEMA) return saved;
+  const shift = (bucket) => Object.fromEntries(Object.entries(bucket || {}).map(([id, value]) => {
+    const n = Number(id.replace(/^ch/, ''));
+    return [n >= 1 ? `ch${String(n + 1).padStart(2, '0')}` : id, value];
+  }));
+  return { ...saved, quiz: shift(saved.quiz), visited: shift(saved.visited), schema: STATE_SCHEMA };
+}
+
 function loadState() {
+  const fresh = { quiz: {}, visited: {}, theme: 'dark', schema: STATE_SCHEMA };
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORE_KEY));
-    return { quiz: {}, visited: {}, theme: 'dark', ...parsed };
+    return { ...fresh, ...migrateState(JSON.parse(localStorage.getItem(STORE_KEY))) };
   } catch {
-    return { quiz: {}, visited: {}, theme: 'dark' };
+    return fresh;
   }
 }
 
@@ -234,6 +296,7 @@ function renderSidebar(activeId) {
     </a></li>`).join('');
   document.getElementById('sidebar').innerHTML = `
     <a href="#/" class="home-link ${activeId ? '' : 'active'}">🏠 Accueil &amp; fil rouge</a>
+    <a href="#/lexique" class="home-link ${activeId === 'lexique' ? 'active' : ''}">📖 Lexique Python</a>
     <ol class="chapter-list">${items}</ol>
     <div class="sidebar-foot">Progression sauvegardée localement dans ce navigateur.</div>`;
 }
@@ -261,7 +324,7 @@ function renderHome() {
     <section class="hero">
       <span class="eyebrow">Parcours pour développeurs back-end Java &amp; C#</span>
       <h1>Construire une API REST <span class="accent">FastAPI</span> propre, testée et prête pour la prod</h1>
-      <p class="lead">13 étapes progressives, du premier endpoint à la conteneurisation, en appliquant
+      <p class="lead">${window.CHAPTERS.length} étapes progressives, du premier endpoint à la conteneurisation, en appliquant
       <strong>Clean Code</strong> et <strong>Clean Architecture</strong>. Chaque étape fait avancer le fil rouge
       <strong>Biblio API</strong> — la gestion d'une bibliothèque — et se termine par un exercice et un QCM.</p>
       <div class="hero-actions">
@@ -306,6 +369,8 @@ function renderHome() {
         <li>Fais l'<strong>exercice fil rouge</strong> avant de déplier la solution.</li>
         <li>Valide le <strong>QCM</strong> : une étape est considérée acquise à partir de 70 % de bonnes réponses.</li>
         <li>Les encadrés <span class="inline-tag tag-java">☕ Côté Java / C#</span> font le pont avec Spring Boot et ASP.NET Core.</li>
+        <li>Tu débutes en Python ? Dans le code, <span class="g-demo">les mots soulignés en pointillé</span> affichent leur définition au survol,
+        les encadrés <strong>🔎 Décryptage</strong> expliquent les extraits ligne à ligne, et le <a href="#/lexique">📖 Lexique</a> regroupe toutes les notions.</li>
       </ol>
       <button class="btn btn-ghost" id="reset-progress" type="button">Réinitialiser ma progression</button>
     </section>
@@ -478,10 +543,131 @@ function renderChapter(chapter, index) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Lexique : page #/lexique et infobulles sur le code                  */
+/* ------------------------------------------------------------------ */
+function glossaryAnchor(key) { return `gl-${[...key].map((c) => c.charCodeAt(0).toString(36)).join('')}`; }
+
+function glossaryEntryHtml(key, entry) {
+  const java = entry.java ? `<div class="gl-java"><span>☕ Java / C#</span> ${entry.java}</div>` : '';
+  return `<div class="gl-entry" id="${glossaryAnchor(key)}" data-search="${escapeHtml(`${key} ${entry.def}`.toLowerCase().replace(/<[^>]+>/g, ''))}">
+    <dt><code>${escapeHtml(key)}</code></dt><dd>${entry.def}${java}</dd></div>`;
+}
+
+function renderGlossary(focusKey) {
+  const sections = GLOSSARY_CATEGORIES.map((cat) => {
+    const entries = Object.entries(GLOSSARY).filter(([, e]) => e.cat === cat)
+      .sort(([a], [b]) => a.replace(/^[@.]/, '').localeCompare(b.replace(/^[@.]/, ''), 'fr', { sensitivity: 'base' }));
+    if (!entries.length) return '';
+    return `<section class="gl-section"><h2>${cat}</h2><dl class="glossary">${entries.map(([k, e]) => glossaryEntryHtml(k, e)).join('')}</dl></section>`;
+  }).join('');
+
+  $content().innerHTML = `
+  <article class="chapter lexique">
+    <header class="chapter-head">
+      <span class="eyebrow">Référence · ${Object.keys(GLOSSARY).length} entrées</span>
+      <h1>📖 Lexique Python</h1>
+      <p class="lead">Tous les mots-clés, fonctions et notions rencontrés dans le tutoriel, avec leur équivalent Java / C#.
+      Dans les blocs de code, <span class="g-demo">les mots soulignés en pointillé</span> ont une définition : survole-les (ou touche-les sur mobile).</p>
+      <input type="search" id="gl-search" class="gl-search" placeholder="Rechercher : def, self, await, Depends…" autocomplete="off">
+    </header>
+    <div class="prose">${sections}<p class="muted" id="gl-empty" hidden>Aucune entrée ne correspond.</p></div>
+  </article>`;
+
+  const input = document.getElementById('gl-search');
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    let visible = 0;
+    $content().querySelectorAll('.gl-entry').forEach((el) => {
+      const show = !q || el.dataset.search.includes(q);
+      el.hidden = !show;
+      if (show) visible++;
+    });
+    $content().querySelectorAll('.gl-section').forEach((sec) => {
+      sec.hidden = ![...sec.querySelectorAll('.gl-entry')].some((el) => !el.hidden);
+    });
+    document.getElementById('gl-empty').hidden = visible > 0;
+  });
+  buildToc();
+  if (focusKey && glossaryLookup(focusKey)) {
+    const target = document.getElementById(glossaryAnchor(focusKey));
+    target.classList.add('gl-focus');
+    setTimeout(() => target.scrollIntoView({ block: 'center' }), 0);
+  }
+}
+
+const glossaryPopover = { el: null, anchor: null, hideTimer: null };
+
+function showGlossary(anchor) {
+  const key = anchor.dataset.g;
+  const entry = glossaryLookup(key);
+  if (!entry) return;
+  clearTimeout(glossaryPopover.hideTimer);
+  if (!glossaryPopover.el) {
+    glossaryPopover.el = document.createElement('div');
+    glossaryPopover.el.className = 'gl-pop';
+    glossaryPopover.el.setAttribute('role', 'tooltip');
+    glossaryPopover.el.addEventListener('mouseenter', () => clearTimeout(glossaryPopover.hideTimer));
+    glossaryPopover.el.addEventListener('mouseleave', () => scheduleHideGlossary());
+    document.body.appendChild(glossaryPopover.el);
+  }
+  const pop = glossaryPopover.el;
+  const java = entry.java ? `<div class="gl-java"><span>☕ Java / C#</span> ${entry.java}</div>` : '';
+  pop.innerHTML = `<div class="gl-pop-head"><code>${escapeHtml(key)}</code><span class="gl-cat">${entry.cat}</span></div>
+    <div class="gl-pop-body">${entry.def}</div>${java}
+    <a class="gl-more" href="#/lexique/${encodeURIComponent(key)}">Voir dans le lexique →</a>`;
+  pop.hidden = false;
+  glossaryPopover.anchor = anchor;
+
+  const rect = anchor.getBoundingClientRect();
+  const width = Math.min(380, window.innerWidth - 16);
+  pop.style.width = `${width}px`;
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+  pop.style.left = `${left}px`;
+  const below = rect.bottom + 8;
+  const height = pop.offsetHeight;
+  pop.style.top = `${below + height > window.innerHeight && rect.top - height - 8 > 0 ? rect.top - height - 8 : below}px`;
+}
+
+function hideGlossary() {
+  if (glossaryPopover.el) glossaryPopover.el.hidden = true;
+  glossaryPopover.anchor = null;
+}
+
+function scheduleHideGlossary() {
+  clearTimeout(glossaryPopover.hideTimer);
+  glossaryPopover.hideTimer = setTimeout(hideGlossary, 250);
+}
+
+document.addEventListener('mouseover', (event) => {
+  const anchor = event.target.closest?.('.g');
+  if (anchor) showGlossary(anchor);
+});
+document.addEventListener('mouseout', (event) => {
+  if (event.target.closest?.('.g')) scheduleHideGlossary();
+});
+document.addEventListener('click', (event) => {
+  const anchor = event.target.closest('.g');
+  if (anchor) { showGlossary(anchor); return; }
+  if (!event.target.closest('.gl-pop')) hideGlossary();
+});
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideGlossary(); });
+window.addEventListener('scroll', hideGlossary, { passive: true });
+
+/* ------------------------------------------------------------------ */
 /* Routage par hash                                                    */
 /* ------------------------------------------------------------------ */
 function route() {
+  hideGlossary();
   const id = location.hash.replace(/^#\/?/, '');
+  const [page, param] = id.split('/');
+  if (page === 'lexique') {
+    renderGlossary(param ? decodeURIComponent(param) : null);
+    renderSidebar('lexique');
+    renderProgress();
+    document.body.classList.remove('sidebar-open');
+    if (!param) window.scrollTo(0, 0);
+    return;
+  }
   const index = window.CHAPTERS.findIndex((c) => c.id === id);
   if (index >= 0) renderChapter(window.CHAPTERS[index], index);
   else renderHome();

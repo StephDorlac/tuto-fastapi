@@ -1,5 +1,5 @@
 registerChapter({
-  id: 'ch06',
+  id: 'ch07',
   title: 'Couche application : ports & use cases',
   subtitle: "Exprimer les besoins du cœur sous forme de Protocols, orchestrer chaque cas d'utilisation et fixer la frontière transactionnelle avec une Unit of Work.",
   duration: '50 min',
@@ -81,6 +81,23 @@ class UnitOfWork(Protocol):
 class Clock(Protocol):
     def now(self) -> datetime: ...
 `}
+${explain([
+  [`from types import TracebackType`, `Le type d'une « trace d'appels » d'exception, utilisé dans la signature de <code>__aexit__</code>.`],
+  [`class BookRepository(Protocol):`, `Un <strong>port</strong> : l'interface du repository de livres, vue depuis l'application. Aucune trace de SQL ici.`],
+  [`async def get(self, book_id: UUID) -> Book | None: ...`, `Une méthode <strong>asynchrone</strong> attendue, écrite sur une seule ligne. Le corps <code>...</code> signifie « pas d'implémentation, juste la signature ». Elle renvoie le livre, ou <code>None</code> s'il n'existe pas.`],
+  [`async def search(self, *, text: str | None, limit: int, offset: int) -> list[Book]: ...`, `Le <code>*</code> impose des arguments nommés : <code>search(text="clean", limit=20, offset=0)</code>.`],
+  [`@property
+def books(self) -> BookRepository: ...`, `L'unité de travail <strong>expose</strong> ses repositories comme attributs en lecture seule : <code>uow.books</code>, <code>uow.members</code>…`],
+  [`async def __aenter__(self) -> Self: ...`, `Ces deux méthodes spéciales permettent d'écrire <code>async with uow:</code>. <code>__aenter__</code> est appelée à l'entrée du bloc et renvoie l'unité de travail elle-même (<code>Self</code>), récupérable avec <code>as uow</code>.`],
+  [`async def __aexit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc: BaseException | None,
+    tb: TracebackType | None,
+) -> None: ...`, `Appelée à la sortie du bloc <code>async with</code>, <strong>même en cas d'exception</strong>. Python lui passe le type, l'objet et la trace de l'exception éventuelle, ou trois <code>None</code> si tout s'est bien passé. C'est l'endroit où l'on annule la transaction en cas d'erreur.`],
+  [`class Clock(Protocol):
+    def now(self) -> datetime: ...`, `Un port pour l'heure courante. En production, on renverra la vraie heure ; en test, une heure figée.`],
+])}
 ${callout('clean', 'Des ports à la mesure des use cases', `
 <p>Pas de <code>GenericRepository&lt;T&gt;</code> avec 25 méthodes « au cas où ». Chaque port expose <strong>exactement</strong> ce dont les use cases ont besoin (<em>Interface Segregation</em>),
 avec des noms métier : <code>count_active_for_member</code> plutôt que <code>count(filter=...)</code>.</p>
@@ -125,6 +142,12 @@ class BorrowBookCommand:
     book_id: UUID
     member_id: UUID
 `}
+${explain([
+  [`@dataclass(frozen=True, slots=True)
+class RegisterBookCommand:`, `Une <strong>commande</strong> : un petit objet immuable qui transporte les données d'entrée d'un use case. Elle ne dépend ni de FastAPI ni de Pydantic.`],
+  [`copies: int = 1`, `Champ facultatif. Les champs avec valeur par défaut viennent toujours <strong>après</strong> les champs obligatoires.`],
+  [`class SearchBooksQuery:`, `Même idée pour une lecture (une <em>query</em>, au sens CQRS).`],
+])}
 ${py.file('src/biblio/application/pagination.py')`
 from dataclasses import dataclass
 
@@ -136,6 +159,10 @@ class Page[T]:                 # syntaxe générique Python 3.12 (PEP 695)
     limit: int
     offset: int
 `}
+${explain([
+  [`class Page[T]:`, `Une classe <strong>générique</strong> en <code>T</code>, avec la syntaxe de Python 3.12 : <code>Page[T]</code> correspond à <code>Page&lt;T&gt;</code>. On écrira <code>Page[Book]</code>.`],
+  [`items: list[T]`, `Les éléments de la page, de type <code>T</code>.`],
+])}
 
 <h2>Use cases du catalogue</h2>
 ${py.file('src/biblio/application/use_cases/books.py')`
@@ -201,6 +228,21 @@ class RenameBook:
             await uow.commit()
         return book
 `}
+${explain([
+  [`class RegisterBook:`, `Un <strong>use case</strong> : une classe avec une seule méthode publique, <code>execute</code>.`],
+  [`def __init__(self, uow: UnitOfWork) -> None:
+    self._uow = uow`, `<strong>Injection par constructeur</strong> : le use case reçoit une unité de travail qui respecte le port <code>UnitOfWork</code>, sans savoir s'il s'agit de SQLAlchemy ou d'un fake de test.`],
+  [`async def execute(self, command: RegisterBookCommand) -> Book:`, `Méthode asynchrone : elle pourra <code>await</code>er les appels à la base.`],
+  [`isbn = Isbn(command.isbn)`, `Construit le value object. Si l'ISBN est invalide, <code>InvalidIsbn</code> est levée tout de suite, avant même d'ouvrir une transaction.`],
+  [`async with self._uow as uow:`, `Ouvre la transaction : Python appelle <code>__aenter__</code>, dont le résultat est rangé dans <code>uow</code>. À la fin du bloc, ou si une exception survient, <code>__aexit__</code> referme proprement la transaction (≈ <code>await using</code>).`],
+  [`if await uow.books.get_by_isbn(isbn) is not None:`, `<code>await</code> attend le résultat de la requête. S'il existe déjà un livre avec cet ISBN (le résultat n'est pas <code>None</code>), on refuse.`],
+  [`await uow.commit()`, `Valide la transaction. Sans cet appel explicite, <code>__aexit__</code> annule tout : c'est volontaire.`],
+  [`return book`, `On renvoie l'entité du domaine. La couche présentation la convertira en JSON.`],
+  [`async with self._uow as uow:
+    book = await uow.books.get(book_id)
+if book is None:`, `Dans <code>GetBook</code>, on sort du <code>async with</code> (on libère la connexion) dès la lecture faite. Les variables définies dans un bloc restent accessibles après lui : <code>book</code> est utilisable en dehors.`],
+  [`return Page(items=items, total=total, limit=query.limit, offset=query.offset)`, `Construit la page de résultats. mypy en déduit le type <code>Page[Book]</code>.`],
+])}
 
 <h2>Use cases des emprunts</h2>
 ${py.file('src/biblio/application/use_cases/loans.py')`
@@ -268,6 +310,19 @@ class ListOverdueLoans:
         async with self._uow as uow:
             return await uow.loans.list_overdue(self._clock.now())
 `}
+${explain([
+  [`def __init__(self, uow: UnitOfWork, clock: Clock) -> None:`, `Deux dépendances injectées : l'unité de travail et l'horloge.`],
+  [`book = await uow.books.get(command.book_id)
+if book is None:
+    raise BookNotFound(command.book_id)`, `Charge le livre, ou lève une erreur métier s'il n'existe pas. L'exception traverse le <code>async with</code>, qui annule la transaction au passage.`],
+  [`member.ensure_can_borrow(await uow.loans.count_active_for_member(member.id))`, `On lit de l'intérieur vers l'extérieur. On <code>await</code>e d'abord le comptage des emprunts actifs, puis on passe le résultat à la règle métier de l'adhérent.`],
+  [`book.lend()`, `La règle « au moins un exemplaire disponible » est vérifiée <strong>dans l'entité</strong>, pas ici.`],
+  [`Loan.start(book_id=book.id, member_id=member.id, now=self._clock.now())`, `Crée l'emprunt avec l'heure fournie par le port <code>Clock</code>.`],
+  [`await uow.books.update(book)
+await uow.loans.add(loan)
+await uow.commit()`, `On persiste les deux modifications, puis on valide <strong>une seule</strong> transaction : soit tout est enregistré, soit rien.`],
+  [`return await uow.loans.list_overdue(self._clock.now())`, `Un <code>return</code> à l'intérieur d'un <code>async with</code> est permis : la sortie du bloc (<code>__aexit__</code>) s'exécute quand même avant de rendre la main.`],
+])}
 ${callout('clean', 'Lis BorrowBook à voix haute', `<p>« Charger le livre, charger l'adhérent, vérifier qu'il peut emprunter, sortir un exemplaire, ouvrir l'emprunt, enregistrer, valider. » Pas de SQL, pas de HTTP, pas de calcul : le use case <strong>orchestre</strong>, et le domaine <strong>décide</strong>.</p>`)}
 
 <h2>La Unit of Work, pas à pas</h2>
@@ -284,7 +339,7 @@ ${callout('warn', 'Concurrence : le dernier exemplaire', `
 La réponse classique est le <strong>verrouillage optimiste</strong>, comme <code>@Version</code> en JPA ou <code>[ConcurrencyCheck]</code>/<code>RowVersion</code> en EF Core.
 SQLAlchemy le propose via <code>__mapper_args__ = {"version_id_col": version}</code>, et lève <code>StaleDataError</code> au commit. Tu pourras le traduire en 409. On le garde comme amélioration à faire en fin de parcours.</p>`)}
 
-${callout('info', 'Et les tests ?', `<p>Ces use cases se testent avec une <code>FakeUnitOfWork</code> en mémoire, de quelques dizaines de lignes, sans base ni HTTP. Les tests s'exécutent en quelques millisecondes. Ce sera l'objet de l'étape 10.</p>`)}
+${callout('info', 'Et les tests ?', `<p>Ces use cases se testent avec une <code>FakeUnitOfWork</code> en mémoire, de quelques dizaines de lignes, sans base ni HTTP. Les tests s'exécutent en quelques millisecondes. Ce sera l'objet de l'étape 11.</p>`)}
 `,
   exercise: {
     title: 'Les use cases des adhérents',
@@ -333,8 +388,12 @@ class GetMember:
             raise MemberNotFound(member_id)
         return member
 `}
+${explain([
+  [`member = Member.register(full_name=command.full_name, email=command.email)`, `On crée l'entité <strong>avant</strong> d'ouvrir la transaction, ce qui normalise l'e-mail (minuscules, sans espaces).`],
+  [`if await uow.members.get_by_email(member.email) is not None:`, `On vérifie l'unicité avec l'e-mail <strong>normalisé</strong>, pas avec la saisie brute.`],
+])}
 <p>Si tu avais cherché avec <code>command.email</code> brut, <code>Alice@Mail.org</code> et <code>alice@mail.org</code> auraient pu coexister. C'est le genre de bug que la normalisation dans le domaine évite.</p>
-<p>En complément, ajoute une contrainte <code>UNIQUE</code> en base (étape 7) : elle protège contre deux inscriptions simultanées.</p>`,
+<p>En complément, ajoute une contrainte <code>UNIQUE</code> en base (étape 8) : elle protège contre deux inscriptions simultanées.</p>`,
   },
   quiz: [
     {
